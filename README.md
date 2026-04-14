@@ -39,7 +39,7 @@ You need accounts for these. Keep the tabs open — setup will ask for credentia
 | Service | Why | Free? |
 |---|---|---|
 | [Claude Code](https://claude.com/code) | Powers the agent. Install it, sign in once, the SDK uses your session. | Subscription required |
-| [Sendblue](https://sendblue.co) | iMessage bridge. Buy a number, get API keys. | Paid (from ~$20/mo) |
+| [Sendblue](https://sendblue.co) | iMessage bridge. Get a number, grab API keys. | Free on their agent plan |
 | [Convex](https://convex.dev) | Database + realtime. | Free tier is plenty |
 | [ngrok](https://ngrok.com) or similar | Expose your local port so Sendblue can reach it. | Free tier works |
 
