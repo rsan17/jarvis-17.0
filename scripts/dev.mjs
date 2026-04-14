@@ -69,9 +69,10 @@ const C = {
 // stream level so the logs stay readable.
 const NOISE_TRIGGERS = [
   /\[vite\] ws proxy socket error/,
-  /Error: write EPIPE/,
-  /AggregateError \[ECONNREFUSED\]/,
   /\[vite\] ws proxy error/,
+  /Error: write EPIPE/,
+  /Error: read ECONNRESET/,
+  /AggregateError \[ECONNREFUSED\]/,
 ];
 const STACK_LINE = /^\s+at\s/;
 
