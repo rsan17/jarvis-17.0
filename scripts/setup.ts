@@ -21,17 +21,37 @@ function readEnv(path: string): Record<string, string> {
 
 function writeEnv(path: string, env: Record<string, string>): void {
   const example = existsSync(EXAMPLE_PATH) ? readFileSync(EXAMPLE_PATH, "utf8") : "";
-  const keys = [...example.matchAll(/^([A-Z0-9_]+)=/gm)].map((m) => m[1]);
-  for (const k of Object.keys(env)) if (!keys.includes(k)) keys.push(k);
 
   let out = "";
+  const seen = new Set<string>();
   const sections = example.split(/\n(?=# ----)/);
+
   for (const section of sections) {
     const sectionKeys = [...section.matchAll(/^([A-Z0-9_]+)=/gm)].map((m) => m[1]);
     let s = section;
     for (const k of sectionKeys) {
+      // Remove ALL existing occurrences of this key in the section (dedupe).
+      const pattern = new RegExp(`^${k}=.*(\\r?\\n)?`, "gm");
+      const matches = [...s.matchAll(pattern)];
+      if (matches.length === 0) continue;
+
+      if (seen.has(k)) {
+        // Already written in an earlier section — just strip any re-occurrences.
+        s = s.replace(pattern, "");
+        continue;
+      }
+
       const v = env[k] ?? "";
-      s = s.replace(new RegExp(`^${k}=.*$`, "m"), `${k}=${v}`);
+      // Replace first occurrence, remove the rest.
+      let replaced = false;
+      s = s.replace(pattern, (match) => {
+        if (!replaced) {
+          replaced = true;
+          return `${k}=${v}` + (match.endsWith("\n") ? "\n" : "");
+        }
+        return "";
+      });
+      seen.add(k);
     }
     out += s + "\n";
   }
