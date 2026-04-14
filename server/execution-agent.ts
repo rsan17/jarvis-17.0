@@ -43,7 +43,7 @@ export interface SpawnResult {
 
 export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResult> {
   const agentId = randomId("agent");
-  const name = opts.name ?? opts.integrations.join("+") || "general";
+  const name = opts.name ?? (opts.integrations.join("+") || "general");
   const abort = new AbortController();
   running.set(agentId, abort);
 
