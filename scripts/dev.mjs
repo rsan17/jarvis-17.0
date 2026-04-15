@@ -145,12 +145,15 @@ function showBanner(url, stable) {
 
   const headline = stable
     ? `your STABLE public URL is live.`
-    : `ngrok tunnel is live  (free-plan URL changes every restart).`;
+    : `ngrok tunnel is live  (webhook auto-registered with Sendblue).`;
   const footer = stable
     ? ``
-    : `\n${C.dim}  ⚠ On free ngrok, paste the new URL into Sendblue every restart.
-    Stable alternatives: ngrok paid (reserved domain) or Cloudflare Tunnel.
-    Re-run \`npm run setup\` to configure one.${C.reset}\n`;
+    : `\n${C.dim}  ℹ The inbound webhook above was registered with Sendblue automatically.
+    Set SENDBLUE_AUTO_WEBHOOK=false in .env.local to disable, or pick a
+    stable URL (ngrok paid / Cloudflare Tunnel) via \`npm run setup\`.${C.reset}\n`;
+  const guide = stable
+    ? `\n  → First time? Sendblue dashboard → API Settings → Webhook\n    Configuration → add ${webhook} as INBOUND MESSAGE.\n`
+    : ``;
 
   console.log(`
 ${C.banner}${line}
@@ -159,10 +162,7 @@ ${C.banner}${line}
   🐶 Debug dashboard (click me):   ${dashboard}
   🌐 Public URL:                   ${url}
   📮 Sendblue webhook (inbound):   ${webhook}
-${fromLine}
-
-  → Sendblue dashboard → API Settings → Webhook Configuration
-    Add as INBOUND MESSAGE webhook. Paste the webhook URL above.
+${fromLine}${guide}
 ${line}${C.reset}${footer}`);
 }
 
