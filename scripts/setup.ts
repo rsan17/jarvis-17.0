@@ -65,13 +65,22 @@ function banner(s: string) {
 }
 
 async function runConvexDev(): Promise<void> {
-  console.log("\nLaunching `npx convex dev --once` to configure your deployment.");
+  // If CONVEX_DEPLOYMENT is already set, `convex dev` reuses that deployment.
+  // Only pass --configure new if this is a first-time setup — otherwise re-running
+  // setup would silently create a new project and abandon all existing data.
+  const existing = readEnv(ENV_PATH);
+  const args = existing.CONVEX_DEPLOYMENT
+    ? ["convex", "dev", "--once"]
+    : ["convex", "dev", "--once", "--configure", "new"];
+
+  console.log(`\nLaunching \`npx ${args.join(" ")}\` to configure your deployment.`);
   console.log("Convex will open a browser window if you're not logged in.");
+  if (existing.CONVEX_DEPLOYMENT) {
+    console.log(`Reusing existing deployment: ${existing.CONVEX_DEPLOYMENT}`);
+  }
+
   await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn("npx", ["convex", "dev", "--once", "--configure", "new"], {
-      stdio: "inherit",
-      cwd: ROOT,
-    });
+    const child = spawn("npx", args, { stdio: "inherit", cwd: ROOT });
     child.on("exit", (code) =>
       code === 0 ? resolvePromise() : reject(new Error(`convex dev exited ${code}`)),
     );
