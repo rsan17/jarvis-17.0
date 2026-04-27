@@ -33,37 +33,6 @@ Built on:
 
 ---
 
-## Heads up before you use this
-
-- **This was never meant to be open-sourced.** I built it for personal use and decided to share the architecture after enough people asked. It's not a product.
-- **Not optimized for cost or security.** Use at your own risk. Review the code, set your own budgets, and don't trust it with anything you wouldn't trust yourself with.
-- **I'm open to PRs for optimizations** — performance, bug fixes, DX improvements, new example integrations, better docs.
-- **Claude Agent SDK is load-bearing.** I won't merge PRs that swap it out or add workarounds to run non-Anthropic models. This template exists specifically to show what you can build on top of the SDK. If you want to run this against a different model or provider, please fork — I'll happily link to good forks from here.
-
----
-
-## Why is it named Boop?
-
-<p align="center">
-  <img src="assets/luna.jpeg" alt="Luna" width="220" />
-  <br>
-  <sub><em>Luna, the inspiration.</em></sub>
-</p>
-
-Boop is meant to be a proactive agent — one that nudges you over iMessage with reminders, drafts, and little follow-ups. A small "boop" whenever it has something for you.
-
-And it's named after my dog, Luna, who gives plenty of them.
-
----
-
-## A note on the native iOS app
-
-I'm working on open-sourcing the native iOS app I originally built for this. The rewrite is taking much longer to get right than I'd hoped, but it will happen. I don't personally use it anymore — but enough people have asked, and I want to make it happen.
-
-If you want to see what it looked like before I transitioned to an iMessage-based agent, here's [the walkthrough on YouTube](https://www.youtube.com/watch?v=_h2EnRfxMQE).
-
----
-
 ## What you get
 
 - **iMessage in / iMessage out** via Sendblue (with typing indicators and webhook dedup).
@@ -104,6 +73,37 @@ If you want to see what it looked like before I transitioned to an iMessage-base
   <br>
   <sub><em>Connections tab — Composio toolkits with OAuth handled for you. Click Connect and the agent can use it on the next message.</em></sub>
 </p>
+
+---
+
+## Heads up before you use this
+
+- **This was never meant to be open-sourced.** I built it for personal use and decided to share the architecture after enough people asked. It's not a product.
+- **Not optimized for cost or security.** Use at your own risk. Review the code, set your own budgets, and don't trust it with anything you wouldn't trust yourself with.
+- **I'm open to PRs for optimizations** — performance, bug fixes, DX improvements, new example integrations, better docs.
+- **Claude Agent SDK is load-bearing.** I won't merge PRs that swap it out or add workarounds to run non-Anthropic models. This template exists specifically to show what you can build on top of the SDK. If you want to run this against a different model or provider, please fork — I'll happily link to good forks from here.
+
+---
+
+## Why is it named Boop?
+
+<p align="center">
+  <img src="assets/luna.jpeg" alt="Luna" width="220" />
+  <br>
+  <sub><em>Luna, the inspiration.</em></sub>
+</p>
+
+Boop is meant to be a proactive agent — one that nudges you over iMessage with reminders, drafts, and little follow-ups. A small "boop" whenever it has something for you.
+
+And it's named after my dog, Luna, who gives plenty of them.
+
+---
+
+## A note on the native iOS app
+
+I'm working on open-sourcing the native iOS app I originally built for this. The rewrite is taking much longer to get right than I'd hoped, but it will happen. I don't personally use it anymore — but enough people have asked, and I want to make it happen.
+
+If you want to see what it looked like before I transitioned to an iMessage-based agent, here's [the walkthrough on YouTube](https://www.youtube.com/watch?v=_h2EnRfxMQE).
 
 ---
 
