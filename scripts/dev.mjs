@@ -41,7 +41,12 @@ const ngrokDomain = envVars.NGROK_DOMAIN || "";
 const publicUrl = envVars.PUBLIC_URL || "";
 const hasStaticUrl =
   publicUrl && !publicUrl.includes("localhost") && !publicUrl.includes("127.0.0.1");
-const useNgrok = !hasStaticUrl || Boolean(ngrokDomain);
+// Telegram uses long polling — no public URL needed. Skip ngrok unless the
+// user is also running Sendblue (which requires an inbound webhook).
+const telegramConfigured = Boolean(envVars.TELEGRAM_BOT_TOKEN);
+const sendblueConfigured = Boolean(envVars.SENDBLUE_API_KEY);
+const useNgrok =
+  (sendblueConfigured || !telegramConfigured) && (!hasStaticUrl || Boolean(ngrokDomain));
 
 // --- binary detection ---------------------------------------------------
 function hasBinary(name) {
@@ -81,6 +86,9 @@ function run(name, cmd, args, readyPattern) {
   const child = spawn(cmd, args, {
     cwd: root,
     env: { ...process.env, FORCE_COLOR: "1" },
+    // Windows resolves `npx`, `convex`, `vite` etc. as `.cmd` shims —
+    // Node's spawn won't find them without going through the shell.
+    shell: process.platform === "win32",
   });
   const prefix = `${C[name]}${name.padEnd(6)}${C.reset} │ `;
   let buf = "";
@@ -137,20 +145,34 @@ async function waitForNgrokUrl(timeoutMs = 15000) {
 
 function showBanner(url, stable) {
   const line = "═".repeat(68);
+  const webhook = `${url}/sendblue/webhook`;
   const dashboard = `http://localhost:5173`;
+  const from = envVars.SENDBLUE_FROM_NUMBER;
+  const fromLine = from
+    ? `  📱 Text this Sendblue number:  ${from}  (from a DIFFERENT phone)`
+    : `  ⚠ SENDBLUE_FROM_NUMBER is not set — outbound sends will fail.\n     Run: npm run sendblue:sync   (pulls it from the Sendblue CLI)`;
 
   const headline = stable
     ? `your STABLE public URL is live.`
-    : `ngrok tunnel is live.`;
+    : `ngrok tunnel is live  (webhook auto-registered with Sendblue).`;
+  const footer = stable
+    ? ``
+    : `\n${C.dim}  ℹ The inbound webhook above was registered with Sendblue automatically.
+    Set SENDBLUE_AUTO_WEBHOOK=false in .env.local to disable, or pick a
+    stable URL (ngrok paid / Cloudflare Tunnel) via \`npm run setup\`.${C.reset}\n`;
+  const guide = stable
+    ? `\n  → First time? Sendblue dashboard → API Settings → Webhook\n    Configuration → add ${webhook} as INBOUND MESSAGE.\n`
+    : ``;
 
   console.log(`
 ${C.banner}${line}
   Boop is ready — ${headline}
 
-  🖥 Debug dashboard (click me):   ${dashboard}
+  🐶 Debug dashboard (click me):   ${dashboard}
   🌐 Public URL:                   ${url}
-${line}${C.reset}
-`);
+  📮 Sendblue webhook (inbound):   ${webhook}
+${fromLine}${guide}
+${line}${C.reset}${footer}`);
 }
 
 // --- main ---------------------------------------------------------------
@@ -164,8 +186,9 @@ ${C.dim}  Install:   brew install ngrok         (macOS)
              or download from https://ngrok.com/download
   Auth:      ngrok config add-authtoken <token>
              (free token at https://dashboard.ngrok.com)
-  Without ngrok you can still use the debug dashboard at http://localhost:5173
-  — iMessage replies via Sendblue won't work until your server is reachable.${C.reset}
+  Without ngrok you can still use the debug dashboard at http://localhost:5173.
+  Telegram (long polling) works without a tunnel. Sendblue/iMessage requires
+  a public URL — skip ngrok entirely if you only use Telegram.${C.reset}
 `);
   }
 }
@@ -211,6 +234,28 @@ if (useNgrok && ngrokInstalled) {
 
 // Wait for all the core services to be ready before printing the banner,
 // so the URL isn't dangled in front of the user while Convex is still booting.
+async function autoRegisterWebhook(publicUrl) {
+  if (envVars.SENDBLUE_AUTO_WEBHOOK === "false") return;
+  const webhookUrl = `${publicUrl}/sendblue/webhook`;
+  const prefix = `${C.ngrok}webhook${C.reset} │ `;
+  const child = spawn("node", ["scripts/sendblue-webhook.mjs", webhookUrl], {
+    cwd: root,
+    env: { ...process.env },
+    shell: process.platform === "win32",
+  });
+  child.stdout.on("data", (d) => {
+    for (const line of d.toString().split("\n")) {
+      if (line.trim()) process.stdout.write(prefix + line + "\n");
+    }
+  });
+  child.stderr.on("data", (d) => {
+    for (const line of d.toString().split("\n")) {
+      if (line.trim()) process.stdout.write(prefix + line + "\n");
+    }
+  });
+  await new Promise((r) => child.on("exit", r));
+}
+
 Promise.all([
   serverChild.ready,
   convexChild.ready,
@@ -220,7 +265,11 @@ Promise.all([
   .then(async ([, , , ngrokUrl]) => {
     if (useNgrok && ngrokInstalled) {
       if (ngrokUrl) {
-        // Only auto-register for ephemeral ngrok URLs.
+        // Only auto-register for ephemeral ngrok URLs. Reserved domains and
+        // static URLs are already fixed in the Sendblue dashboard.
+        if (!ngrokDomain) {
+          await autoRegisterWebhook(ngrokUrl);
+        }
         showBanner(ngrokUrl, Boolean(ngrokDomain));
       } else {
         console.log(
@@ -231,14 +280,15 @@ Promise.all([
       showBanner(publicUrl, true);
     } else {
       const line = "═".repeat(68);
+      const telegramLine = telegramConfigured
+        ? `\n  ✈ Telegram bot is live (long polling). Message your bot to chat.`
+        : `\n  ⚠ No public tunnel configured. iMessage won't work until you expose
+    the server. Use the Chat tab in the dashboard to test for now.`;
       console.log(`
 ${C.banner}${line}
   Boop is running locally.
 
-  🐶 Debug dashboard:   http://localhost:5173
-
-  ⚠ No public tunnel configured. iMessage won't work until you expose
-    the server. Use the Chat tab in the dashboard to test for now.
+  🐶 Debug dashboard:   http://localhost:5173${telegramLine}
 ${line}${C.reset}
 `);
     }

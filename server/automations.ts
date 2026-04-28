@@ -3,6 +3,7 @@ import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { spawnExecutionAgent } from "./execution-agent.js";
 import { sendImessage } from "./sendblue.js";
+import { sendTelegramMessage } from "./telegram.js";
 import { broadcast } from "./broadcast.js";
 
 function randomId(prefix: string): string {
@@ -59,10 +60,13 @@ async function runAutomation(a: {
     });
 
     if (a.notifyConversationId && res.result) {
+      const preamble = `[${a.name}]\n\n`;
       if (a.notifyConversationId.startsWith("sms:")) {
         const number = a.notifyConversationId.slice(4);
-        const preamble = `[${a.name}]\n\n`;
         await sendImessage(number, preamble + res.result);
+      } else if (a.notifyConversationId.startsWith("tg:")) {
+        const chatId = a.notifyConversationId.slice(3);
+        await sendTelegramMessage(chatId, preamble + res.result);
       }
       await convex.mutation(api.messages.send, {
         conversationId: a.notifyConversationId,

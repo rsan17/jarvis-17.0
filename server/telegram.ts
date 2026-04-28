@@ -1,128 +1,246 @@
-import { Router } from "express";
+import { Bot } from "grammy";
 import FormData from "form-data";
+import { api } from "../convex/_generated/api.js";
+import { convex } from "./convex-client.js";
 import { handleUserMessage } from "./interaction-agent.js";
+import { broadcast } from "./broadcast.js";
 
-const getTelegramApi = () =>
-  `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+// Telegram message limit is 4096 chars; leave headroom for safety.
+const MAX_CHUNK = 3800;
 
-async function downloadTelegramFile(fileId: string): Promise<Buffer> {
-  const api = getTelegramApi();
-  const infoRes = await fetch(`${api}/getFile?file_id=${encodeURIComponent(fileId)}`);
-  if (!infoRes.ok) throw new Error(`getFile failed: ${infoRes.status}`);
-  const infoJson = (await infoRes.json()) as { ok: boolean; result: { file_path: string } };
-  if (!infoJson.ok) throw new Error("Telegram getFile returned ok=false");
-  const filePath = infoJson.result.file_path;
-
-  const token = process.env.TELEGRAM_BOT_TOKEN!;
-  const fileUrl = `https://api.telegram.org/file/bot${token}/${filePath}`;
-  const fileRes = await fetch(fileUrl);
-  if (!fileRes.ok) throw new Error(`File download failed: ${fileRes.status}`);
-  return Buffer.from(await fileRes.arrayBuffer());
+function chunk(text: string, size = MAX_CHUNK): string[] {
+  if (text.length <= size) return [text];
+  const out: string[] = [];
+  let buf = "";
+  for (const line of text.split(/\n/)) {
+    if ((buf + "\n" + line).length > size) {
+      if (buf) out.push(buf);
+      buf = line;
+    } else {
+      buf = buf ? buf + "\n" + line : line;
+    }
+  }
+  if (buf) out.push(buf);
+  return out;
 }
 
-async function transcribeVoice(audioBuffer: Buffer): Promise<string> {
+function parseAllowlist(): Set<string> | null {
+  const raw = process.env.TELEGRAM_ALLOWED_CHAT_IDS;
+  if (!raw) return null;
+  const ids = raw
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return ids.length ? new Set(ids) : null;
+}
+
+let botSingleton: Bot | null = null;
+
+export function getTelegramBot(): Bot | null {
+  if (botSingleton) return botSingleton;
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return null;
+  botSingleton = new Bot(token);
+  return botSingleton;
+}
+
+export async function sendTelegramMessage(chatId: string, text: string): Promise<void> {
+  const bot = getTelegramBot();
+  if (!bot) {
+    console.warn("[telegram] missing TELEGRAM_BOT_TOKEN — not sending");
+    return;
+  }
+  for (const part of chunk(text)) {
+    try {
+      await bot.api.sendMessage(chatId, part);
+      console.log(`[telegram] → sent ${part.length} chars to ${chatId}`);
+    } catch (err) {
+      console.error(`[telegram] send failed:`, err);
+    }
+  }
+}
+
+export function startTypingLoop(chatId: string): () => void {
+  const bot = getTelegramBot();
+  if (!bot) return () => {};
+  const send = () => {
+    bot.api.sendChatAction(chatId, "typing").catch(() => {});
+  };
+  send();
+  // Telegram clears the typing indicator after ~5s, so refresh on that cadence.
+  const timer = setInterval(send, 4500);
+  return () => clearInterval(timer);
+}
+
+// --- voice transcription via OpenAI Whisper -----------------------------
+async function downloadVoiceFile(fileId: string): Promise<Buffer> {
+  const bot = getTelegramBot();
+  if (!bot) throw new Error("telegram bot not initialized");
+  const file = await bot.api.getFile(fileId);
+  const token = process.env.TELEGRAM_BOT_TOKEN!;
+  const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`voice download failed: ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+async function transcribeVoice(audio: Buffer): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY not set — cannot transcribe voice");
   const form = new FormData();
-  form.append("file", audioBuffer, {
-    filename: "voice.ogg",
-    contentType: "audio/ogg",
-  });
+  form.append("file", audio, { filename: "voice.ogg", contentType: "audio/ogg" });
   form.append("model", "whisper-1");
 
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       ...form.getHeaders(),
     },
     body: form as unknown as BodyInit,
   });
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Whisper transcription failed: ${response.status} — ${err}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`whisper failed: ${res.status} — ${err}`);
   }
-  const result = (await response.json()) as { text: string };
-  return result.text.trim();
+  const json = (await res.json()) as { text: string };
+  return json.text.trim();
 }
 
-async function sendTelegramMessage(chatId: string, text: string): Promise<void> {
-  const api = getTelegramApi();
-  await fetch(`${api}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+// Both text and voice updates funnel through this. Centralizing the
+// allowlist/dedup/typing/agent path keeps the two grammy handlers thin and
+// avoids drift between transports.
+async function handleIncoming(opts: {
+  chatId: string;
+  content: string;
+  updateId: string;
+  allowlist: Set<string> | null;
+}): Promise<void> {
+  const { chatId, content, updateId, allowlist } = opts;
+
+  if (allowlist && !allowlist.has(chatId)) {
+    console.log(`[telegram] ignored message from non-allowlisted chat ${chatId}`);
+    return;
+  }
+
+  // Dedup against Telegram's update_id in case Telegram retries delivery.
+  const { claimed } = await convex.mutation(api.telegramDedup.claim, {
+    handle: updateId,
   });
+  if (!claimed) {
+    console.log(`[telegram] deduped update ${updateId}`);
+    return;
+  }
+
+  const conversationId = `tg:${chatId}`;
+  const turnTag = Math.random().toString(36).slice(2, 8);
+  const preview = content.length > 100 ? content.slice(0, 100) + "…" : content;
+  console.log(`[turn ${turnTag}] ← tg:${chatId}: ${JSON.stringify(preview)}`);
+  const start = Date.now();
+
+  broadcast("message_in", { conversationId, content, from_number: chatId, handle: updateId });
+
+  const stopTyping = startTypingLoop(chatId);
+  try {
+    const reply = await handleUserMessage({
+      conversationId,
+      content,
+      turnTag,
+      onThinking: (t) => broadcast("thinking", { conversationId, t }),
+    });
+    if (reply) {
+      const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+      const replyPreview = reply.length > 100 ? reply.slice(0, 100) + "…" : reply;
+      console.log(
+        `[turn ${turnTag}] → reply (${elapsed}s, ${reply.length} chars): ${JSON.stringify(replyPreview)}`,
+      );
+      await sendTelegramMessage(chatId, reply);
+      await convex.mutation(api.messages.send, {
+        conversationId,
+        role: "assistant",
+        content: reply,
+      });
+    } else {
+      console.log(`[turn ${turnTag}] → (no reply)`);
+    }
+  } catch (err) {
+    console.error(`[turn ${turnTag}] handler error`, err);
+  } finally {
+    stopTyping();
+  }
 }
 
-export function createTelegramRouter(): Router {
-  const router = Router();
+export async function startTelegramBot(): Promise<void> {
+  const bot = getTelegramBot();
+  if (!bot) {
+    console.log("[telegram] TELEGRAM_BOT_TOKEN not set — skipping Telegram bot");
+    return;
+  }
 
-  /**
-   * POST /telegram/webhook
-   * Receives all updates from Telegram. Always responds 200 immediately to
-   * prevent Telegram from retrying, then processes the message asynchronously.
-   */
-  router.post("/webhook", (req, res) => {
-    res.json({ ok: true }); // ack immediately
+  const allowlist = parseAllowlist();
+  if (!allowlist) {
+    console.warn(
+      "[telegram] TELEGRAM_ALLOWED_CHAT_IDS not set — bot will respond to ANY chat. Set this to lock the bot to your own chat id(s).",
+    );
+  }
 
-    void (async () => {
-      const update = req.body as TelegramUpdate;
-      const message = update.message ?? update.edited_message;
-      if (!message) return;
-
-      const chatId = String(message.chat.id);
-      const conversationId = `telegram:${chatId}`;
-
-      let content: string | null = null;
-
-      if (message.text) {
-        content = message.text;
-      } else if (message.voice) {
-        const { file_id: fileId } = message.voice;
-        console.log(`[telegram] voice note chatId=${chatId} file_id=${fileId}`);
-        try {
-          const audioBuffer = await downloadTelegramFile(fileId);
-          const transcript = await transcribeVoice(audioBuffer);
-          console.log(`[telegram] transcript: ${transcript}`);
-          content = `[Voice note]: ${transcript}`;
-        } catch (err) {
-          console.error("[telegram] transcription error:", err);
-          await sendTelegramMessage(chatId, "Sorry — I couldn't transcribe that voice note. Try again?");
-          return;
-        }
-      }
-
-      if (!content) return; // unsupported message type (photo, sticker, etc.)
-
-      try {
-        const reply = await handleUserMessage({ conversationId, content });
-        await sendTelegramMessage(chatId, reply);
-      } catch (err) {
-        console.error("[telegram] agent error:", err);
-        await sendTelegramMessage(chatId, "Sorry — something went wrong. Try again in a moment.");
-      }
-    })();
+  bot.on("message:text", async (ctx) => {
+    await handleIncoming({
+      chatId: String(ctx.chat.id),
+      content: ctx.message.text,
+      updateId: String(ctx.update.update_id),
+      allowlist,
+    });
   });
 
-  return router;
-}
+  bot.on("message:voice", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const updateId = String(ctx.update.update_id);
 
-// ---- Minimal Telegram type stubs ----
-interface TelegramUpdate {
-  update_id: number;
-  message?: TelegramMessage;
-  edited_message?: TelegramMessage;
-}
+    // Allowlist gate first — don't spend Whisper credits on strangers.
+    // The same check repeats inside handleIncoming for the reply path.
+    if (allowlist && !allowlist.has(chatId)) {
+      console.log(`[telegram] ignored voice from non-allowlisted chat ${chatId}`);
+      return;
+    }
 
-interface TelegramMessage {
-  message_id: number;
-  chat: { id: number; type: string };
-  from?: { id: number; username?: string };
-  text?: string;
-  voice?: {
-    file_id: string;
-    file_unique_id: string;
-    duration: number;
-    mime_type?: string;
-    file_size?: number;
-  };
+    const fileId = ctx.message.voice.file_id;
+    console.log(`[telegram] voice note chatId=${chatId} file_id=${fileId}`);
+    const stopTyping = startTypingLoop(chatId);
+    let transcript: string;
+    try {
+      const audio = await downloadVoiceFile(fileId);
+      transcript = await transcribeVoice(audio);
+      console.log(`[telegram] transcript: ${JSON.stringify(transcript.slice(0, 200))}`);
+    } catch (err) {
+      console.error("[telegram] voice transcription failed:", err);
+      stopTyping();
+      await sendTelegramMessage(
+        chatId,
+        "Sorry — I couldn't transcribe that voice note. Try again or send text?",
+      );
+      return;
+    } finally {
+      stopTyping();
+    }
+
+    await handleIncoming({
+      chatId,
+      content: `[Voice note]: ${transcript}`,
+      updateId,
+      allowlist,
+    });
+  });
+
+  bot.catch((err) => {
+    console.error("[telegram] bot error:", err);
+  });
+
+  // Long polling — no public URL / tunnel required.
+  bot.start({
+    onStart: (info) =>
+      console.log(`[telegram] bot @${info.username} started (long polling)`),
+  }).catch((err) => {
+    console.error("[telegram] failed to start polling:", err);
+  });
 }

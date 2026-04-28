@@ -4,6 +4,8 @@ import cors from "cors";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { addClient } from "./broadcast.js";
+import { createSendblueRouter } from "./sendblue.js";
+import { startTelegramBot } from "./telegram.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { loadIntegrations } from "./integrations/registry.js";
 import { startCleanupLoop } from "./memory/clean.js";
@@ -12,7 +14,6 @@ import { startHeartbeatLoop } from "./heartbeat.js";
 import { startConsolidationLoop } from "./consolidation.js";
 import { cancelAgent, retryAgent } from "./execution-agent.js";
 import { createComposioRouter } from "./composio-routes.js";
-import { createTelegramRouter } from "./telegram.js";
 
 async function main() {
   await loadIntegrations();
@@ -20,6 +21,7 @@ async function main() {
   startAutomationLoop();
   startHeartbeatLoop();
   startConsolidationLoop();
+  await startTelegramBot();
 
   const app = express();
   app.use(cors());
@@ -29,8 +31,8 @@ async function main() {
     res.json({ ok: true, service: "boop-agent" });
   });
 
+  app.use("/sendblue", createSendblueRouter());
   app.use("/composio", createComposioRouter());
-  app.use("/telegram", createTelegramRouter());
 
   app.post("/agents/:id/cancel", (req, res) => {
     const ok = cancelAgent(req.params.id);
@@ -87,7 +89,10 @@ async function main() {
     console.log(`boop-agent server listening on :${port}`);
     console.log(`  health      GET  http://localhost:${port}/health`);
     console.log(`  chat        POST http://localhost:${port}/chat`);
-    console.log(`  telegram    POST http://localhost:${port}/telegram/webhook`);
+    console.log(`  sendblue    POST http://localhost:${port}/sendblue/webhook`);
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      console.log(`  telegram    long-polling enabled`);
+    }
     console.log(`  websocket   WS   ws://localhost:${port}/ws`);
   });
 }
