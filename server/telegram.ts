@@ -84,9 +84,22 @@ async function downloadVoiceFile(fileId: string): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer());
 }
 
+// Distinguish "voice is not configured" from "tried and failed" so the
+// user-facing error in the voice handler can say something useful.
+class VoiceConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VoiceConfigError";
+  }
+}
+
 async function transcribeVoice(audio: Buffer): Promise<string> {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY not set — cannot transcribe voice");
+  if (!apiKey) {
+    throw new VoiceConfigError(
+      "OPENAI_API_KEY not set — voice transcription disabled. Set it in .env to enable.",
+    );
+  }
   const form = new FormData();
   form.append("file", audio, { filename: "voice.ogg", contentType: "audio/ogg" });
   form.append("model", "whisper-1");
@@ -183,6 +196,11 @@ export async function startTelegramBot(): Promise<void> {
       "[telegram] TELEGRAM_ALLOWED_CHAT_IDS not set — bot will respond to ANY chat. Set this to lock the bot to your own chat id(s).",
     );
   }
+  if (!process.env.OPENAI_API_KEY) {
+    console.warn(
+      "[telegram] OPENAI_API_KEY not set — voice notes will be rejected with a config error. Set it in .env to enable Whisper transcription.",
+    );
+  }
 
   bot.on("message:text", async (ctx) => {
     await handleIncoming({
@@ -215,10 +233,11 @@ export async function startTelegramBot(): Promise<void> {
     } catch (err) {
       console.error("[telegram] voice transcription failed:", err);
       stopTyping();
-      await sendTelegramMessage(
-        chatId,
-        "Sorry — I couldn't transcribe that voice note. Try again or send text?",
-      );
+      const userMessage =
+        err instanceof VoiceConfigError
+          ? "Voice notes aren't set up on this bot — `OPENAI_API_KEY` is missing in the server's .env. Send text instead, or ping the operator to enable Whisper."
+          : "Sorry — I couldn't transcribe that voice note. Try again or send text?";
+      await sendTelegramMessage(chatId, userMessage);
       return;
     } finally {
       stopTyping();
