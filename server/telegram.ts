@@ -46,11 +46,14 @@ async function transcribeVoice(audioBuffer: Buffer): Promise<string> {
 
 async function sendTelegramMessage(chatId: string, text: string): Promise<void> {
   const api = getTelegramApi();
-  await fetch(`${api}/sendMessage`, {
+  const res = await fetch(`${api}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, text }),
   });
+  if (!res.ok) {
+    console.error(`[telegram] sendMessage failed: ${res.status}`);
+  }
 }
 
 export function createTelegramRouter(): Router {
