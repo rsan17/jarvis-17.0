@@ -20,7 +20,7 @@ async function downloadTelegramFile(fileId: string): Promise<Buffer> {
   return Buffer.from(await fileRes.arrayBuffer());
 }
 
-arync function transcribeVoice(audioBuffer: Buffer): Promise<string> {
+async function transcribeVoice(audioBuffer: Buffer): Promise<string> {
   const form = new FormData();
   form.append("file", audioBuffer, {
     filename: "voice.ogg",
@@ -46,11 +46,14 @@ arync function transcribeVoice(audioBuffer: Buffer): Promise<string> {
 
 async function sendTelegramMessage(chatId: string, text: string): Promise<void> {
   const api = getTelegramApi();
-  await fetch(`${api}/sendMessage`, {
+  const res = await fetch(`${api}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, text }),
   });
+  if (!res.ok) {
+    console.error(`[telegram] sendMessage failed: ${res.status}`);
+  }
 }
 
 export function createTelegramRouter(): Router {
