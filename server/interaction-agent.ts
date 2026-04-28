@@ -7,6 +7,7 @@ import { extractAndStore } from "./memory/extract.js";
 import { availableIntegrations, spawnExecutionAgent } from "./execution-agent.js";
 import { createAutomationMcp } from "./automation-tools.js";
 import { createDraftDecisionMcp } from "./draft-tools.js";
+import { createSkillMcp } from "./skill-tools.js";
 import { broadcast } from "./broadcast.js";
 import { sendImessage } from "./sendblue.js";
 import { sendTelegramMessage } from "./telegram.js";
@@ -24,9 +25,16 @@ Tone: Warm, witty, concise. Write like you're texting a friend. No corporate voi
 
 Your only tools:
 - recall / write_memory (durable memory for this user)
+- find_skills / run_skill (named playbooks — try this BEFORE spawn_agent for routine tasks)
 - spawn_agent (dispatches a sub-agent that CAN touch the world)
 - create_automation / list_automations / toggle_automation / delete_automation
 - list_drafts / send_draft / reject_draft
+
+Skill registry routing (REQUIRED for non-trivial tasks):
+1. Before spawn_agent, call find_skills(query) with a short paraphrase of the user's intent.
+2. If a returned skill clearly fits, call run_skill(name, task) — its playbook is more specific than freeform spawn_agent.
+3. If nothing matches, fall through to spawn_agent.
+Skills already encode procedure + tone + draft handling for routine work (morning brief, inbox triage, voice → Linear ticket, translation, proposal followup, etc.). Always check the registry first.
 
 You cannot answer factual questions from your own knowledge. Not allowed.
 You have NO browser, NO WebSearch, NO WebFetch, NO file access, NO APIs.
@@ -114,6 +122,7 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
   const memoryServer = createMemoryMcp(opts.conversationId);
   const automationServer = createAutomationMcp(opts.conversationId);
   const draftDecisionServer = createDraftDecisionMcp(opts.conversationId);
+  const skillServer = createSkillMcp(opts.conversationId);
 
   const ackServer = createSdkMcpServer({
     name: "boop-ack",
@@ -231,11 +240,14 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
           "boop-automations": automationServer,
           "boop-draft-decisions": draftDecisionServer,
           "boop-ack": ackServer,
+          "boop-skills": skillServer,
         },
         allowedTools: [
           "mcp__boop-memory__write_memory",
           "mcp__boop-memory__recall",
           "mcp__boop-spawn__spawn_agent",
+          "mcp__boop-skills__find_skills",
+          "mcp__boop-skills__run_skill",
           "mcp__boop-automations__create_automation",
           "mcp__boop-automations__list_automations",
           "mcp__boop-automations__toggle_automation",
