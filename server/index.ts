@@ -14,6 +14,7 @@ import { startHeartbeatLoop } from "./heartbeat.js";
 import { startConsolidationLoop } from "./consolidation.js";
 import { cancelAgent, retryAgent } from "./execution-agent.js";
 import { createComposioRouter } from "./composio-routes.js";
+import { startSkillIndexer } from "./skills/indexer.js";
 
 async function main() {
   await loadIntegrations();
@@ -21,6 +22,11 @@ async function main() {
   startAutomationLoop();
   startHeartbeatLoop();
   startConsolidationLoop();
+  // Don't fail boot if Convex / embeddings are temporarily unhappy —
+  // skills are best-effort, the rest of the bot should still come up.
+  startSkillIndexer().catch((err) =>
+    console.warn("[skills] indexer failed to start:", err),
+  );
   await startTelegramBot();
 
   const app = express();

@@ -30,6 +30,10 @@ These are invariants that have been violated in past PRs and silently regressed 
 
 8. **Do not regenerate package-lock.json from scratch unnecessarily.** Touching it pulls in unrelated transitive bumps and bloats the diff. Only touch when adding/removing direct dependencies.
 
+9. **`server/convex-client.ts` keeps the `CONVEX_URL ?? VITE_CONVEX_URL` fallback.** Newer Convex CLI versions write only `VITE_CONVEX_URL` to `.env.local`; reverting this fallback breaks server boot. The droplet hit this regression once already after a careless upstream merge.
+
+10. **Skill registry is wired through the `run_skill` MCP, not raw `Skill` in dispatcher.** Layout: `.claude/skills/<name>/SKILL.md` → `server/skills/indexer.ts` watches and pushes to Convex tables `skills` + `skillRuns` → `server/skill-tools.ts` exposes `find_skills` + `run_skill` to the dispatcher. The dispatcher must NOT have raw `"Skill"` in `allowedTools` — that's reserved for the execution sub-agent that `run_skill` spawns. Adding a new skill = drop a folder into `.claude/skills/` (the watcher reindexes within ~200ms).
+
 ## When running `/upgrade-boop` (upstream merges)
 
 Resolve conflicts in favor of **Telegram-first behavior**:

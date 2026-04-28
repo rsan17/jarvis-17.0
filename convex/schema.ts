@@ -225,4 +225,57 @@ export default defineSchema({
   })
     .index("by_automation", ["automationId"])
     .index("by_run_id", ["runId"]),
+
+  // Skill registry — indexed copy of `.claude/skills/<name>/SKILL.md` files,
+  // refreshed on disk changes by the watcher. The body is stored so we can
+  // hash-compare on rescans; the embedding feeds find_skills RAG retrieval.
+  skills: defineTable({
+    name: v.string(),
+    description: v.string(),
+    body: v.string(),
+    // Optional frontmatter fields surfaced for routing/safety:
+    allowedTools: v.optional(v.string()),
+    // Heuristic shape — short / medium / long — to inform the dispatcher
+    // whether picking this skill is cheap or expensive.
+    tokenShape: v.union(
+      v.literal("short"),
+      v.literal("medium"),
+      v.literal("long"),
+    ),
+    sourceFile: v.string(),
+    fileHash: v.string(),
+    embedding: v.optional(v.array(v.float64())),
+    indexedAt: v.number(),
+  })
+    .index("by_name", ["name"])
+    .index("by_source_file", ["sourceFile"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 1024,
+    }),
+
+  // Append-only log of every skill invocation. Used for analytics
+  // (which skills earn their keep, which silently fail) and to feed the
+  // future model router.
+  skillRuns: defineTable({
+    runId: v.string(),
+    skillName: v.string(),
+    agentId: v.optional(v.string()),
+    conversationId: v.optional(v.string()),
+    taskInput: v.string(),
+    status: v.union(
+      v.literal("running"),
+      v.literal("completed"),
+      v.literal("failed"),
+    ),
+    result: v.optional(v.string()),
+    errorMsg: v.optional(v.string()),
+    durationMs: v.optional(v.number()),
+    costUsd: v.optional(v.number()),
+    startedAt: v.number(),
+    completedAt: v.optional(v.number()),
+  })
+    .index("by_run_id", ["runId"])
+    .index("by_skill", ["skillName"])
+    .index("by_conversation", ["conversationId"]),
 });
