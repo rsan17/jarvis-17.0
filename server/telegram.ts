@@ -156,7 +156,13 @@ async function describeImage(image: Buffer, mediaType: string): Promise<string> 
       `image too large: ${image.byteLength} bytes (limit ${IMAGE_BYTES_LIMIT})`,
     );
   }
-  const model = process.env.BOOP_MODEL ?? "claude-sonnet-4-6";
+  // Vision is a one-shot describe call — it doesn't need the per-turn
+  // model router. Pin a vision-capable model directly. Don't read
+  // BOOP_MODEL: that env can hold the sentinel "auto" (router mode),
+  // which is not a real Anthropic model id and yields a 404.
+  // VISION_MODEL_OVERRIDE is the explicit escape hatch if you ever want
+  // to force opus or a future vision-capable model just for descriptions.
+  const model = process.env.VISION_MODEL_OVERRIDE ?? "claude-sonnet-4-6";
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
