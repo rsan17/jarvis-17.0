@@ -8,7 +8,6 @@ import { availableIntegrations, spawnExecutionAgent } from "./execution-agent.js
 import { createAutomationMcp } from "./automation-tools.js";
 import { createDraftDecisionMcp } from "./draft-tools.js";
 import { broadcast } from "./broadcast.js";
-import { sendImessage } from "./sendblue.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
 
 const INTERACTION_SYSTEM = `You are Boop, a personal agent the user texts from iMessage.
@@ -132,10 +131,6 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
             return {
               content: [{ type: "text" as const, text: "Empty ack skipped." }],
             };
-          }
-          if (opts.conversationId.startsWith("sms:")) {
-            const number = opts.conversationId.slice(4);
-            await sendImessage(number, text);
           }
           await convex.mutation(api.messages.send, {
             conversationId: opts.conversationId,

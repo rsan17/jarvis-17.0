@@ -156,11 +156,6 @@ export default defineSchema({
     .index("by_automation_id", ["automationId"])
     .index("by_enabled", ["enabled"]),
 
-  sendblueDedup: defineTable({
-    handle: v.string(),
-    claimedAt: v.number(),
-  }).index("by_handle", ["handle"]),
-
   drafts: defineTable({
     draftId: v.string(),
     conversationId: v.string(),
