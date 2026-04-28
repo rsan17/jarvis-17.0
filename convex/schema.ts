@@ -156,6 +156,20 @@ export default defineSchema({
     .index("by_automation_id", ["automationId"])
     .index("by_enabled", ["enabled"]),
 
+  // Sendblue dedup table — kept dormant for upstream-merge compatibility
+  // (Sendblue/iMessage transport is no longer the primary path; Telegram is).
+  // Do not delete — see CLAUDE.md.
+  sendblueDedup: defineTable({
+    handle: v.string(),
+    claimedAt: v.number(),
+  }).index("by_handle", ["handle"]),
+
+  // Telegram dedup against update_id; primary transport for this fork.
+  telegramDedup: defineTable({
+    handle: v.string(),
+    claimedAt: v.number(),
+  }).index("by_handle", ["handle"]),
+
   drafts: defineTable({
     draftId: v.string(),
     conversationId: v.string(),
