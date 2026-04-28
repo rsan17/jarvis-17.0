@@ -11,6 +11,7 @@ import { createSkillMcp } from "./skill-tools.js";
 import { broadcast } from "./broadcast.js";
 import { sendImessage } from "./sendblue.js";
 import { sendTelegramMessage } from "./telegram.js";
+import { selectModel } from "./model-router.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
 
 const INTERACTION_SYSTEM = `You are Jarvis, a personal agent the user texts from Telegram.
@@ -225,7 +226,12 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
   const log = (msg: string) => console.log(`[turn ${tag}] ${msg}`);
 
   const turnStart = Date.now();
-  const requestedModel = process.env.BOOP_MODEL ?? "claude-sonnet-4-6";
+  const decision = await selectModel({
+    content: opts.content,
+    conversationId: opts.conversationId,
+  });
+  const requestedModel = decision.model;
+  log(`model: ${decision.tier} (${decision.reason})`);
   let reply = "";
   let usage: UsageTotals = { ...EMPTY_USAGE };
   try {
@@ -233,7 +239,7 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
       prompt,
       options: {
         systemPrompt,
-        model: process.env.BOOP_MODEL ?? "claude-sonnet-4-6",
+        model: requestedModel,
         mcpServers: {
           "boop-memory": memoryServer,
           "boop-spawn": spawnServer,

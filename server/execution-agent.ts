@@ -4,6 +4,7 @@ import { convex } from "./convex-client.js";
 import { broadcast } from "./broadcast.js";
 import { buildMcpServersForIntegrations, listIntegrations } from "./integrations/registry.js";
 import { createDraftStagingMcp } from "./draft-tools.js";
+import { selectModel } from "./model-router.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
 
 const running = new Map<string, AbortController>();
@@ -108,7 +109,25 @@ export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResu
   let status: "completed" | "failed" | "cancelled" = "completed";
   let errorMsg: string | undefined;
 
-  const requestedModel = process.env.BOOP_MODEL ?? "claude-sonnet-4-6";
+  // Probe the skill registry if the task looks like a `run_skill` invocation,
+  // so the router can bump to opus on long-shape playbooks.
+  let skillShape: "short" | "medium" | "long" | undefined;
+  const skillMatch = opts.task.match(/Use the "([a-z][a-z0-9-]*)" skill/);
+  if (skillMatch) {
+    try {
+      const skill = await convex.query(api.skills.byName, { name: skillMatch[1] });
+      skillShape = skill?.tokenShape;
+    } catch {
+      // skill probe failure is non-fatal — fall through to content scoring.
+    }
+  }
+  const decision = await selectModel({
+    content: opts.task,
+    conversationId: opts.conversationId,
+    skillShape,
+  });
+  const requestedModel = decision.model;
+  logAgent(`model: ${decision.tier} (${decision.reason})`);
   try {
     for await (const msg of query({
       prompt: opts.task,

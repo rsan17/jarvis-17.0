@@ -34,6 +34,8 @@ These are invariants that have been violated in past PRs and silently regressed 
 
 10. **Skill registry is wired through the `run_skill` MCP, not raw `Skill` in dispatcher.** Layout: `.claude/skills/<name>/SKILL.md` → `server/skills/indexer.ts` watches and pushes to Convex tables `skills` + `skillRuns` → `server/skill-tools.ts` exposes `find_skills` + `run_skill` to the dispatcher. The dispatcher must NOT have raw `"Skill"` in `allowedTools` — that's reserved for the execution sub-agent that `run_skill` spawns. Adding a new skill = drop a folder into `.claude/skills/` (the watcher reindexes within ~200ms).
 
+11. **Model selection goes through `server/model-router.ts`, not raw `process.env.BOOP_MODEL`.** Set `BOOP_MODEL=auto` (or unset it) to enable per-turn routing — haiku for chit-chat, sonnet for normal turns, opus for hard / long-shape skill turns. Setting `BOOP_MODEL` to a model id pins every turn to that model (legacy, predictable cost). Inline overrides in user messages (`use opus`, `використай haiku`) and persistent memory preferences (`always use opus for code reviews`) override the heuristic when present. The interaction-agent and execution-agent both call `selectModel()` and log `[turn X] model: tier (reason)` so router decisions are visible without instrumentation.
+
 ## When running `/upgrade-boop` (upstream merges)
 
 Resolve conflicts in favor of **Telegram-first behavior**:
