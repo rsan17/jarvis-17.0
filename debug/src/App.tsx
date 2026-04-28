@@ -91,13 +91,13 @@ export function App() {
         } backdrop-blur-sm`}
       >
         <div className="flex items-center gap-3">
-          <img src="/lunagotchi.png" alt="Boop" className="w-7 h-7 rounded-lg" />
+          <img src="/lunagotchi.png" alt="Jarvis" className="w-7 h-7 rounded-lg" />
           <h1
             className={`text-sm font-bold tracking-wide uppercase ${
               isDark ? "text-slate-400" : "text-slate-500"
             }`}
           >
-            Boop Debug
+            Jarvis <span className={isDark ? "text-slate-600" : "text-slate-400"}>· 17dots</span>
           </h1>
           <div
             className={`flex items-center gap-1.5 text-xs ${

@@ -41,7 +41,12 @@ const ngrokDomain = envVars.NGROK_DOMAIN || "";
 const publicUrl = envVars.PUBLIC_URL || "";
 const hasStaticUrl =
   publicUrl && !publicUrl.includes("localhost") && !publicUrl.includes("127.0.0.1");
-const useNgrok = !hasStaticUrl || Boolean(ngrokDomain);
+// Telegram uses long polling — no public URL needed. Skip ngrok unless the
+// user is also running Sendblue (which requires an inbound webhook).
+const telegramConfigured = Boolean(envVars.TELEGRAM_BOT_TOKEN);
+const sendblueConfigured = Boolean(envVars.SENDBLUE_API_KEY);
+const useNgrok =
+  (sendblueConfigured || !telegramConfigured) && (!hasStaticUrl || Boolean(ngrokDomain));
 
 // --- binary detection ---------------------------------------------------
 function hasBinary(name) {
@@ -81,6 +86,9 @@ function run(name, cmd, args, readyPattern) {
   const child = spawn(cmd, args, {
     cwd: root,
     env: { ...process.env, FORCE_COLOR: "1" },
+    // Windows resolves `npx`, `convex`, `vite` etc. as `.cmd` shims —
+    // Node's spawn won't find them without going through the shell.
+    shell: process.platform === "win32",
   });
   const prefix = `${C[name]}${name.padEnd(6)}${C.reset} │ `;
   let buf = "";
@@ -178,8 +186,9 @@ ${C.dim}  Install:   brew install ngrok         (macOS)
              or download from https://ngrok.com/download
   Auth:      ngrok config add-authtoken <token>
              (free token at https://dashboard.ngrok.com)
-  Without ngrok you can still use the debug dashboard at http://localhost:5173
-  — iMessage replies via Sendblue won't work until your server is reachable.${C.reset}
+  Without ngrok you can still use the debug dashboard at http://localhost:5173.
+  Telegram (long polling) works without a tunnel. Sendblue/iMessage requires
+  a public URL — skip ngrok entirely if you only use Telegram.${C.reset}
 `);
   }
 }
@@ -232,6 +241,7 @@ async function autoRegisterWebhook(publicUrl) {
   const child = spawn("node", ["scripts/sendblue-webhook.mjs", webhookUrl], {
     cwd: root,
     env: { ...process.env },
+    shell: process.platform === "win32",
   });
   child.stdout.on("data", (d) => {
     for (const line of d.toString().split("\n")) {
@@ -270,14 +280,15 @@ Promise.all([
       showBanner(publicUrl, true);
     } else {
       const line = "═".repeat(68);
+      const telegramLine = telegramConfigured
+        ? `\n  ✈ Telegram bot is live (long polling). Message your bot to chat.`
+        : `\n  ⚠ No public tunnel configured. iMessage won't work until you expose
+    the server. Use the Chat tab in the dashboard to test for now.`;
       console.log(`
 ${C.banner}${line}
   Boop is running locally.
 
-  🐶 Debug dashboard:   http://localhost:5173
-
-  ⚠ No public tunnel configured. iMessage won't work until you expose
-    the server. Use the Chat tab in the dashboard to test for now.
+  🐶 Debug dashboard:   http://localhost:5173${telegramLine}
 ${line}${C.reset}
 `);
     }

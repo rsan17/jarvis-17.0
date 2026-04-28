@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { addClient } from "./broadcast.js";
 import { createSendblueRouter } from "./sendblue.js";
+import { startTelegramBot } from "./telegram.js";
 import { handleUserMessage } from "./interaction-agent.js";
 import { loadIntegrations } from "./integrations/registry.js";
 import { startCleanupLoop } from "./memory/clean.js";
@@ -20,6 +21,7 @@ async function main() {
   startAutomationLoop();
   startHeartbeatLoop();
   startConsolidationLoop();
+  await startTelegramBot();
 
   const app = express();
   app.use(cors());
@@ -88,6 +90,9 @@ async function main() {
     console.log(`  health      GET  http://localhost:${port}/health`);
     console.log(`  chat        POST http://localhost:${port}/chat`);
     console.log(`  sendblue    POST http://localhost:${port}/sendblue/webhook`);
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      console.log(`  telegram    long-polling enabled`);
+    }
     console.log(`  websocket   WS   ws://localhost:${port}/ws`);
   });
 }

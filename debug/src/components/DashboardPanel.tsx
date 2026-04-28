@@ -60,10 +60,20 @@ export function DashboardPanel({ isDark }: { isDark: boolean }) {
       automationRuns += d.automationRuns;
     }
 
+    // Monthly projection: average daily cost over the *active* days in this
+    // range (days with any spend), extrapolated to 30. Empty days dilute the
+    // average and make the forecast misleading early on.
+    const activeDays = days.filter((d) => d.agentCost > 0);
+    const avgDailyCost =
+      activeDays.length > 0
+        ? activeDays.reduce((s, d) => s + d.agentCost, 0) / activeDays.length
+        : 0;
+    const monthlyProjection = avgDailyCost * 30;
+
     const totalTokens = inputTokens + outputTokens;
     return {
       days,
-      cost: { total: agentCost, agents: agentCost },
+      cost: { total: agentCost, agents: agentCost, projectedMonthly: monthlyProjection },
       tokens: { input: inputTokens, output: outputTokens, total: totalTokens },
       agents: {
         total: agentsSpawned,
@@ -73,6 +83,7 @@ export function DashboardPanel({ isDark }: { isDark: boolean }) {
         failureRate: agentsSpawned > 0 ? agentsFailed / agentsSpawned : 0,
       },
       automationRuns,
+      activeDayCount: activeDays.length,
     };
   }, [data, range]);
 
@@ -162,6 +173,11 @@ export function DashboardPanel({ isDark }: { isDark: boolean }) {
         <StatCard
           label="Total Cost"
           value={`$${filtered.cost.total.toFixed(2)}`}
+          sub={
+            filtered.activeDayCount > 0
+              ? `~$${filtered.cost.projectedMonthly.toFixed(2)}/mo projected`
+              : "no spend yet"
+          }
           color={isDark ? "text-emerald-400" : "text-emerald-600"}
           c={c}
         />
@@ -221,6 +237,77 @@ export function DashboardPanel({ isDark }: { isDark: boolean }) {
           />
         </div>
       )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className={`rounded-xl border p-4 ${c.chart}`}>
+          <div className="flex items-center justify-between mb-3">
+            <h3
+              className={`text-xs font-semibold uppercase tracking-wider ${c.label}`}
+            >
+              Cost by Toolkit
+            </h3>
+            <span className={`text-[10px] ${c.sub}`}>
+              {data.toolkitCosts.length} active
+            </span>
+          </div>
+          {data.toolkitCosts.length === 0 ? (
+            <p className={`text-xs ${isDark ? "text-slate-600" : "text-slate-400"}`}>
+              No agent runs yet — connect a toolkit and chat with the bot.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {data.toolkitCosts.slice(0, 8).map((t) => (
+                <BarRow
+                  key={t.toolkit}
+                  label={t.toolkit === "_native" ? "(no toolkit)" : t.toolkit}
+                  value={t.cost}
+                  total={data.toolkitCosts[0]?.cost ?? 1}
+                  color={isDark ? "bg-violet-500" : "bg-violet-600"}
+                  isDark={isDark}
+                  format={(v) => `$${v.toFixed(3)}`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className={`rounded-xl border p-4 ${c.chart}`}>
+          <div className="flex items-center justify-between mb-3">
+            <h3
+              className={`text-xs font-semibold uppercase tracking-wider ${c.label}`}
+            >
+              Drafts Awaiting You
+            </h3>
+            <span
+              className={`text-[10px] mono px-1.5 py-0.5 rounded ${
+                data.pendingDraftCount > 0
+                  ? isDark
+                    ? "bg-amber-500/20 text-amber-300"
+                    : "bg-amber-100 text-amber-700"
+                  : isDark
+                    ? "bg-slate-800 text-slate-500"
+                    : "bg-slate-100 text-slate-500"
+              }`}
+            >
+              {data.pendingDraftCount}
+            </span>
+          </div>
+          <p className={`text-xs ${isDark ? "text-slate-400" : "text-slate-600"}`}>
+            {data.pendingDraftCount === 0
+              ? "Inbox zero — Jarvis has nothing waiting on your approval."
+              : `${data.pendingDraftCount} action${data.pendingDraftCount === 1 ? "" : "s"} drafted by Jarvis. Reply "send it" in Telegram to commit, or open the Agents tab to inspect.`}
+          </p>
+          <div
+            className={`mt-3 text-[11px] leading-relaxed ${
+              isDark ? "text-slate-500" : "text-slate-500"
+            }`}
+          >
+            Drafts are how Jarvis stages every external action — emails, events,
+            messages. Destructive ops (delete/archive) are blocked at the SDK
+            level entirely.
+          </div>
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div className={`rounded-xl border p-4 ${c.chart}`}>

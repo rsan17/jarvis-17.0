@@ -161,6 +161,11 @@ export default defineSchema({
     claimedAt: v.number(),
   }).index("by_handle", ["handle"]),
 
+  telegramDedup: defineTable({
+    handle: v.string(),
+    claimedAt: v.number(),
+  }).index("by_handle", ["handle"]),
+
   drafts: defineTable({
     draftId: v.string(),
     conversationId: v.string(),
@@ -199,6 +204,12 @@ export default defineSchema({
   })
     .index("by_run_id", ["runId"])
     .index("by_status", ["status"]),
+
+  settings: defineTable({
+    key: v.string(),
+    value: v.string(),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
 
   automationRuns: defineTable({
     runId: v.string(),

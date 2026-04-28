@@ -437,7 +437,13 @@ function extractAccountIdentity(state: unknown, data: unknown): AccountIdentity 
 export async function renameConnection(connectionId: string, alias: string): Promise<void> {
   const composio = getComposio();
   if (!composio) throw new Error("COMPOSIO_API_KEY not set");
-  await composio.connectedAccounts.update(connectionId, { alias });
+  // Composio v0.8 dropped `alias` from UpdateConnectedAccountParams typing, but
+  // the underlying REST endpoint still accepts it. Cast through to keep the
+  // Connections-tab rename action working until we move to a proper API.
+  await composio.connectedAccounts.update(
+    connectionId,
+    { alias } as unknown as { enabled: boolean },
+  );
 }
 
 export class ComposioNeedsAuthConfigError extends Error {
@@ -499,6 +505,32 @@ export async function disconnectToolkit(connectionId: string): Promise<void> {
   await composio.connectedAccounts.delete(connectionId);
 }
 
+// Composio tool names follow `<TOOLKIT>_<VERB>_<NOUN>` (uppercase, snake-cased).
+// We strip destructive verbs before the model ever sees them — the only legit
+// path to mutation in this app is the draft staging flow. Words like LIST_TRASH
+// or GET_ARCHIVE survive because they appear in noun position, not as the verb.
+const DESTRUCTIVE_VERBS = new Set([
+  "DELETE",
+  "REMOVE",
+  "DESTROY",
+  "TRASH",
+  "ARCHIVE",
+  "PURGE",
+  "REVOKE",
+  "WIPE",
+  "ERASE",
+  "UNSUBSCRIBE",
+  "UNINSTALL",
+]);
+
+function isDestructiveToolName(name: string): boolean {
+  const parts = name.toUpperCase().split("_");
+  if (parts.length < 2) return false;
+  // Destructive when the verb is the first or second token (covers both
+  // `<TOOLKIT>_DELETE_<NOUN>` and bare `DELETE_<NOUN>` shapes).
+  return DESTRUCTIVE_VERBS.has(parts[0] ?? "") || DESTRUCTIVE_VERBS.has(parts[1] ?? "");
+}
+
 export function buildComposioIntegrationModule(slug: string): IntegrationModule {
   return {
     name: slug,
@@ -509,24 +541,33 @@ export function buildComposioIntegrationModule(slug: string): IntegrationModule 
       if (!composio) {
         throw new Error(`[composio] cannot build ${slug} — COMPOSIO_API_KEY not set`);
       }
-      // If the user has 2+ active connections for this toolkit, force Composio to
-      // require explicit account selection per tool call — otherwise it silently
-      // picks the default account.
-      const activeCount = (await listConnectedToolkits()).filter(
-        (c) => c.slug === slug && c.status === "ACTIVE",
-      ).length;
-      const session = await composio.create(boopUserId(), {
+      // Static-tool mode: we fetch the toolkit's full concrete tool list (each
+      // tool has its real name like GMAIL_DELETE_MESSAGE) and register them
+      // directly. Composio's tool-router mode (composio.create + session.tools)
+      // is broken with parallel tool_use under the Claude Agent SDK as of v0.8 —
+      // it returns duplicate tool_use ids and the API rejects with 400. Static
+      // mode also lets us actually filter destructive tools by name; in router
+      // mode the underlying tools are dynamic and invisible to us.
+      const tools = await composio.tools.get(boopUserId(), {
         toolkits: [slug],
-        manageConnections: false,
-        ...(activeCount >= 2
-          ? { multiAccount: { enable: true, requireExplicitSelection: true } }
-          : {}),
+        limit: 500,
       });
-      const tools = await session.tools();
+      const safeTools = tools.filter((t) => !isDestructiveToolName(t.name));
+      const blocked = tools.length - safeTools.length;
+      if (blocked > 0) {
+        const blockedNames = tools
+          .filter((t) => isDestructiveToolName(t.name))
+          .map((t) => t.name);
+        console.log(
+          `[composio] ${slug}: ${tools.length} total, ${blocked} destructive blocked — ${blockedNames.slice(0, 8).join(", ")}${blockedNames.length > 8 ? `, …+${blockedNames.length - 8}` : ""}`,
+        );
+      } else {
+        console.log(`[composio] ${slug}: ${tools.length} tools registered (no destructive)`);
+      }
       return createSdkMcpServer({
         name: slug,
         version: "0.1.0",
-        tools,
+        tools: safeTools,
       });
     },
   };

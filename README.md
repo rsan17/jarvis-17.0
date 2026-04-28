@@ -4,9 +4,25 @@
 
 # Boop
 
-An iMessage-based personal agent built on top of the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview).
+A personal agent (iMessage **or Telegram**) built on top of the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview).
 
 📺 **Watch the walkthrough:** [YouTube — How I built Boop](https://youtu.be/ZpmKjDDbqHs)
+
+## Telegram quickstart (no tunnel required)
+
+This fork adds a Telegram transport so you can skip Sendblue, ngrok, and the SMS provisioning. Telegram uses long polling — your laptop talks to Telegram's servers, no inbound webhook needed.
+
+1. **Create a bot.** In Telegram, open [@BotFather](https://t.me/BotFather), send `/newbot`, follow prompts, copy the token it gives you.
+2. **Find your chat id.** Send `/start` to your new bot, then open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser. Look for `"chat":{"id":<NUMBER>}`.
+3. **Configure `.env.local`:**
+   ```bash
+   TELEGRAM_BOT_TOKEN=123456:ABC...
+   TELEGRAM_ALLOWED_CHAT_IDS=123456789   # comma-separate multiple ids
+   ```
+   Skip the `SENDBLUE_*` vars entirely. ngrok is also optional in this mode.
+4. **Run it.** `npm install` → `npm run setup` (just generates Convex types — ignore the Sendblue prompts) → `npm run dev`. Message your bot.
+
+Without `TELEGRAM_ALLOWED_CHAT_IDS`, the bot answers anyone — set it.
 
 <p align="center">
   <img src="assets/imessage.jpg" alt="Boop replying inside iMessage" width="320" />

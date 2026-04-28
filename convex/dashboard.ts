@@ -8,11 +8,12 @@ const METRICS_SCAN_LIMIT = 5000;
 export const metrics = query({
   args: {},
   handler: async (ctx) => {
-    const [messages, memories, agents, automationRuns] = await Promise.all([
+    const [messages, memories, agents, automationRuns, drafts] = await Promise.all([
       ctx.db.query("messages").order("desc").take(METRICS_SCAN_LIMIT),
       ctx.db.query("memoryRecords").order("desc").take(METRICS_SCAN_LIMIT),
       ctx.db.query("executionAgents").order("desc").take(METRICS_SCAN_LIMIT),
       ctx.db.query("automationRuns").order("desc").take(METRICS_SCAN_LIMIT),
+      ctx.db.query("drafts").order("desc").take(METRICS_SCAN_LIMIT),
     ]);
     const truncated =
       messages.length === METRICS_SCAN_LIMIT ||
@@ -77,6 +78,26 @@ export const metrics = query({
 
     const dailyBuckets = [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day));
 
+    // Per-toolkit attribution: each agent's cost is split equally across the
+    // toolkits it loaded. An agent with no integrations contributes to the
+    // synthetic "_native" bucket (built-in tools only — WebSearch/WebFetch).
+    const toolkitMap = new Map<string, { cost: number; agentCount: number }>();
+    for (const a of agents) {
+      const toolkits = a.mcpServers && a.mcpServers.length > 0 ? a.mcpServers : ["_native"];
+      const share = (a.costUsd ?? 0) / toolkits.length;
+      for (const t of toolkits) {
+        const cur = toolkitMap.get(t) ?? { cost: 0, agentCount: 0 };
+        cur.cost += share;
+        cur.agentCount += 1;
+        toolkitMap.set(t, cur);
+      }
+    }
+    const toolkitCosts = [...toolkitMap.entries()]
+      .map(([toolkit, v]) => ({ toolkit, cost: v.cost, agentCount: v.agentCount }))
+      .sort((a, b) => b.cost - a.cost);
+
+    const pendingDraftCount = drafts.filter((d) => d.status === "pending").length;
+
     return {
       messages: messages.length,
       memories: {
@@ -102,6 +123,8 @@ export const metrics = query({
         output: agents.reduce((s, a) => s + (a.outputTokens ?? 0), 0),
       },
       dailyBuckets,
+      toolkitCosts,
+      pendingDraftCount,
       truncated,
       scanLimit: METRICS_SCAN_LIMIT,
     };
