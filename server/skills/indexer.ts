@@ -102,9 +102,9 @@ async function discoverSkillFiles(root: string): Promise<string[]> {
 async function indexOne(
   filePath: string,
   knownByName: Map<string, { sourceFile: string; fileHash: string }>,
-): Promise<{ name: string; action: "created" | "updated" | "skipped" } | null> {
+): Promise<{ name: string; action: "created" | "updated" | "skipped" } | { failed: true; filePath: string } | null> {
   const parsed = await parseSkillFile(filePath);
-  if (!parsed) return null;
+  if (!parsed) return { failed: true, filePath };
 
   const known = knownByName.get(parsed.name);
   if (known && known.fileHash === parsed.fileHash && known.sourceFile === parsed.sourceFile) {
@@ -141,6 +141,8 @@ async function reconcile(): Promise<{
   updated: number;
   skipped: number;
   removed: number;
+  failed: number;
+  failedFiles: string[];
 }> {
   const files = await discoverSkillFiles(PROJECT_SKILLS_DIR);
   const meta = await convex.query(api.skills.listMeta, {});
@@ -150,10 +152,17 @@ async function reconcile(): Promise<{
   let created = 0;
   let updated = 0;
   let skipped = 0;
+  let failed = 0;
+  const failedFiles: string[] = [];
 
   for (const f of files) {
     const res = await indexOne(f, knownByName);
     if (!res) continue;
+    if ("failed" in res) {
+      failed++;
+      failedFiles.push(res.filePath);
+      continue;
+    }
     seenNames.add(res.name);
     if (res.action === "created") created++;
     else if (res.action === "updated") updated++;
@@ -169,35 +178,64 @@ async function reconcile(): Promise<{
     }
   }
 
-  return { created, updated, skipped, removed };
+  return { created, updated, skipped, removed, failed, failedFiles };
+}
+
+// Debounced reconcile — chokidar fires multiple events on a single file
+// edit (and many events on `git pull`). We coalesce them into a single
+// reconcile run after a quiet window. The window is short enough to feel
+// instant, long enough to absorb a multi-file batch.
+let reconcileTimer: NodeJS.Timeout | null = null;
+const RECONCILE_DEBOUNCE_MS = 400;
+
+function scheduleReconcile(): void {
+  if (reconcileTimer) clearTimeout(reconcileTimer);
+  reconcileTimer = setTimeout(() => {
+    reconcileTimer = null;
+    reconcile()
+      .then((s) => {
+        const summary = `[skills] reindex: ${s.created} created, ${s.updated} updated, ${s.skipped} unchanged, ${s.removed} removed${s.failed > 0 ? `, ${s.failed} FAILED` : ""}`;
+        if (s.failed > 0) {
+          console.warn(summary);
+          for (const f of s.failedFiles) console.warn(`[skills]   failed: ${f}`);
+        } else if (s.created || s.updated || s.removed) {
+          console.log(summary);
+        }
+      })
+      .catch((err) => console.warn("[skills] reindex failed", err));
+  }, RECONCILE_DEBOUNCE_MS);
 }
 
 let watcher: FSWatcher | null = null;
 
 export async function startSkillIndexer(): Promise<void> {
   const summary = await reconcile();
-  console.log(
-    `[skills] indexed: ${summary.created} created, ${summary.updated} updated, ${summary.skipped} unchanged, ${summary.removed} removed`,
-  );
+  const base = `[skills] indexed: ${summary.created} created, ${summary.updated} updated, ${summary.skipped} unchanged, ${summary.removed} removed`;
+  if (summary.failed > 0) {
+    console.warn(`${base}, ${summary.failed} FAILED`);
+    for (const f of summary.failedFiles) console.warn(`[skills]   failed: ${f}`);
+  } else {
+    console.log(base);
+  }
 
-  // Watcher debounces are not needed — indexOne hash-checks before writing.
-  // ignoreInitial skips the initial-add events (we already did the scan).
+  // chokidar fires multiple events for a single edit (and many on git pull);
+  // scheduleReconcile coalesces a burst into one reconcile run.
   watcher = chokidar.watch(`${PROJECT_SKILLS_DIR}/*/SKILL.md`, {
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 200 },
   });
   watcher
-    .on("add", () => void reconcile().catch((err) => console.warn("[skills] reindex failed", err)))
-    .on("change", () =>
-      void reconcile().catch((err) => console.warn("[skills] reindex failed", err)),
-    )
-    .on("unlink", () =>
-      void reconcile().catch((err) => console.warn("[skills] reindex failed", err)),
-    );
+    .on("add", () => scheduleReconcile())
+    .on("change", () => scheduleReconcile())
+    .on("unlink", () => scheduleReconcile());
   console.log(`[skills] watching ${PROJECT_SKILLS_DIR}/*/SKILL.md for changes`);
 }
 
 export async function stopSkillIndexer(): Promise<void> {
+  if (reconcileTimer) {
+    clearTimeout(reconcileTimer);
+    reconcileTimer = null;
+  }
   if (watcher) {
     await watcher.close();
     watcher = null;

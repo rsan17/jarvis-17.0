@@ -3,7 +3,7 @@ import { z } from "zod";
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { embed } from "./embeddings.js";
-import { spawnExecutionAgent } from "./execution-agent.js";
+import { availableIntegrations, spawnExecutionAgent } from "./execution-agent.js";
 
 function randomId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -134,9 +134,14 @@ export function createSkillMcp(conversationId: string | undefined) {
           let result = "";
           let errorMsg: string | undefined;
           try {
+            // Skills frequently call into integrations the dispatcher can't
+            // pre-declare (a single playbook may touch gmail + calendar +
+            // linear in one run). Pass ALL available integrations so the
+            // sub-agent can compose freely. Per-skill scoping moves to a
+            // future `integrations:` SKILL.md frontmatter field.
             const res = await spawnExecutionAgent({
               task: wrappedTask,
-              integrations: [],
+              integrations: availableIntegrations(),
               conversationId,
               name: `skill:${args.name}`,
             });

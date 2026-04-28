@@ -61,9 +61,13 @@ function detectInlineOverride(content: string): Tier | null {
   return null;
 }
 
+// Voice notes arrive prefixed by server/telegram.ts. The prefix shouldn't
+// affect routing — strip it before length / chit-chat / keyword matching.
+const VOICE_PREFIX = /^\[Voice note\]:\s*/;
+
 export function scoreContent(content: string): number {
   let score = 0;
-  const trimmed = content.trim();
+  const trimmed = content.trim().replace(VOICE_PREFIX, "");
   const len = trimmed.length;
 
   if (len < 30) score -= 1;
@@ -108,12 +112,25 @@ async function detectMemoryOverride(
   return null;
 }
 
+// Best-effort tier label for an arbitrary model id. Used only for log lines;
+// the router never decides anything on this label.
+function tierFromModelId(modelId: string): Tier {
+  const lower = modelId.toLowerCase();
+  if (lower.includes("opus")) return "opus";
+  if (lower.includes("haiku")) return "haiku";
+  return "sonnet";
+}
+
 export async function selectModel(opts: RouterInput): Promise<RouterDecision> {
   // 1. Legacy env pin — set BOOP_MODEL to a model id to force it.
   // Set BOOP_MODEL=auto (or unset) to let the router decide.
   const envModel = process.env.BOOP_MODEL;
   if (envModel && envModel !== "auto") {
-    return { model: envModel, tier: "sonnet", reason: "BOOP_MODEL pin" };
+    return {
+      model: envModel,
+      tier: tierFromModelId(envModel),
+      reason: "BOOP_MODEL pin",
+    };
   }
 
   // 2. Inline override in current message
