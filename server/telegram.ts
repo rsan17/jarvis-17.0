@@ -20,7 +20,7 @@ async function downloadTelegramFile(fileId: string): Promise<Buffer> {
   return Buffer.from(await fileRes.arrayBuffer());
 }
 
-async function transcribeVoice(audioBuffer: Buffer): Promise<string> {
+arync function transcribeVoice(audioBuffer: Buffer): Promise<string> {
   const form = new FormData();
   form.append("file", audioBuffer, {
     filename: "voice.ogg",
