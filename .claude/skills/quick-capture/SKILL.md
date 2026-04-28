@@ -1,6 +1,6 @@
 ---
 name: quick-capture
-description: Catch-all "remember this" — auto-tag a fragment (idea / task / fact / person / quote) and route it to the right place: durable memory for facts, Linear for tasks, draft-staged Notion entry for ideas. Use when the user says "запам'ятай", "запиши", "remember this", "note this", "ідея", "saved this thought", "throw this in inbox", "throw it somewhere", or sends a stand-alone fragment with no clear ask. Voice-friendly.
+description: Catch-all "remember this" — auto-tag a fragment (idea / task / fact / person / quote) and route it to the right place — durable memory for facts, Linear for tasks, draft-staged Notion entry for ideas. Use when the user says "запам'ятай", "запиши", "remember this", "note this", "ідея", "saved this thought", "throw this in inbox", "throw it somewhere", or sends a stand-alone fragment with no clear ask. Voice-friendly.
 ---
 
 # Quick capture
