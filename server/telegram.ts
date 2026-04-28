@@ -1,5 +1,4 @@
 import { Bot } from "grammy";
-import FormData from "form-data";
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { handleUserMessage } from "./interaction-agent.js";
@@ -100,17 +99,19 @@ async function transcribeVoice(audio: Buffer): Promise<string> {
       "OPENAI_API_KEY not set — voice transcription disabled. Set it in .env to enable.",
     );
   }
+  // Use the global Web FormData + Blob (Node 20+). The npm `form-data`
+  // package and Node's native `fetch` don't agree on streaming — the
+  // boundary header gets lost, OpenAI returns 400 "Could not parse
+  // multipart form". Native FormData composes the multipart body itself
+  // and native fetch sets Content-Type with the right boundary.
   const form = new FormData();
-  form.append("file", audio, { filename: "voice.ogg", contentType: "audio/ogg" });
+  form.append("file", new Blob([new Uint8Array(audio)], { type: "audio/ogg" }), "voice.ogg");
   form.append("model", "whisper-1");
 
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      ...form.getHeaders(),
-    },
-    body: form as unknown as BodyInit,
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: form,
   });
   if (!res.ok) {
     const err = await res.text();
