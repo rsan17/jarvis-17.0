@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { api } from "../../convex/_generated/api.js";
 import { convex } from "../convex-client.js";
 import { embed } from "../embeddings.js";
+import { checkDailyCap } from "../cost-guard.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "../usage.js";
 import { SEGMENT_DEFAULTS, makeMemoryId, type MemorySegment } from "./types.js";
 
@@ -44,7 +45,23 @@ export async function extractAndStore(opts: {
   turnId: string;
 }): Promise<void> {
   const started = Date.now();
-  const requestedModel = process.env.BOOP_MODEL ?? "claude-sonnet-4-6";
+  // BOOP_MODEL can be the router sentinel "auto" — that's only meaningful
+  // for the dispatcher / execution-agent which call selectModel(). For
+  // background extraction we want a real, fixed model id; default to
+  // sonnet so the SDK doesn't try to resolve a non-existent "auto" model.
+  const envModel = process.env.BOOP_MODEL;
+  const requestedModel =
+    !envModel || envModel === "auto" ? "claude-sonnet-4-6" : envModel;
+
+  // Cost guard — extraction runs after every turn, so a stuck loop is the
+  // worst-case multiplier. Bail before invoking the SDK; a missed
+  // extraction is recoverable, an over-budget bot is not.
+  const cap = await checkDailyCap();
+  if (!cap.ok) {
+    console.warn(`[memory.extract] skipped: ${cap.reason}`);
+    return;
+  }
+
   try {
     const payload = `USER: ${opts.userMessage}\n\nASSISTANT: ${opts.assistantReply}`;
     let buffer = "";
@@ -54,6 +71,10 @@ export async function extractAndStore(opts: {
       options: {
         systemPrompt: EXTRACTION_PROMPT,
         model: requestedModel,
+        // Extraction is a single round-trip with strict-JSON output. 3
+        // covers the SDK's normal flow + one retry; anything more means
+        // the model is looping and we want to stop, not pay forever.
+        maxTurns: 3,
         permissionMode: "bypassPermissions",
       },
     })) {

@@ -48,6 +48,30 @@ export const recent = query({
   },
 });
 
+// Sum of costUsd over the last 24 hours. Used by the dispatcher and
+// execution agent as a circuit breaker before each Claude call —
+// if it exceeds DAILY_COST_USD_CAP, we refuse the turn instead of
+// letting a runaway automation or sub-agent loop spend silently.
+//
+// Implementation note: there is no `createdAt` index on usageRecords,
+// so we scan the most-recent 5_000 rows (Convex .collect() ceiling is
+// 16_384). At ~3 calls/turn and < 500 turns/day in the worst case this
+// is comfortable. If we ever cross that volume, add a `by_createdAt`
+// index and switch to a range query.
+export const spentLast24h = query({
+  args: {},
+  handler: async (ctx) => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const rows = await ctx.db.query("usageRecords").order("desc").take(5000);
+    let total = 0;
+    for (const r of rows) {
+      if (r.createdAt < cutoff) break; // rows are already in desc order
+      total += r.costUsd;
+    }
+    return total;
+  },
+});
+
 export const summary = query({
   args: { conversationId: v.optional(v.string()), limit: v.optional(v.number()) },
   handler: async (ctx, args) => {
