@@ -129,12 +129,18 @@ async function transcribeVoice(audio: Buffer): Promise<string> {
 }
 
 // --- image description via Claude vision (Anthropic Messages API) -------
-// Caps the input at 5 MB (Anthropic image limit) and tells the model to
-// produce a thorough description + verbatim OCR of any text. The output
-// becomes the dispatcher's only window into the image, so we ask for
-// detail rather than a one-liner.
+// Caps each image at 5 MB (Anthropic per-image limit) and asks the model
+// for a thorough description + verbatim OCR. The output becomes the
+// dispatcher's only window into the image(s), so we ask for detail
+// rather than a one-liner.
+//
+// Multi-image (Telegram albums) goes through this same call with all
+// images packed into a single content array. Per the Anthropic docs,
+// "Multiple images can be included in a single request, which Claude
+// will analyze jointly when formulating its response. This can be
+// helpful for comparing or contrasting images."
 const IMAGE_BYTES_LIMIT = 5 * 1024 * 1024;
-const VISION_PROMPT = `You are describing an image so a downstream agent can act on it without seeing it.
+const VISION_PROMPT_SINGLE = `You are describing an image so a downstream agent can act on it without seeing it.
 
 Be thorough:
 - What is shown overall (UI screenshot, photo, diagram, document, chat, code, etc.).
@@ -144,18 +150,39 @@ Be thorough:
 
 Do NOT add interpretation the user didn't ask for. Just describe what's there. Output is plain text — no markdown headers, no preamble like "Here is a description". Lead with the type of image, then the contents.`;
 
-async function describeImage(image: Buffer, mediaType: string): Promise<string> {
+const VISION_PROMPT_ALBUM = `You are describing an album of images so a downstream agent can act on them without seeing them.
+
+For each image, in order:
+1. Lead with "Image N:" (1-indexed).
+2. Describe what is shown (UI screenshot, photo, diagram, document, chat, code, etc.).
+3. Extract all visible text verbatim — preserve line breaks, formatting, code, errors, URLs.
+4. Note layout cues (highlighted areas, cursor position, selected items, errors).
+
+Then add a short final paragraph titled "Across the album:" calling out any obvious relationships — same content from different angles, before/after, sequence of steps, or completely unrelated. Skip the final paragraph if the images are clearly independent.
+
+Do NOT add interpretation the user didn't ask for. Output is plain text — no markdown headers beyond the per-image prefix and the final "Across the album:" line.`;
+
+interface ImagePart {
+  buffer: Buffer;
+  mediaType: string;
+}
+
+async function describeImages(images: ImagePart[]): Promise<string> {
+  if (images.length === 0) throw new Error("describeImages called with no images");
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new ImageConfigError(
       "ANTHROPIC_API_KEY not set — image description disabled. Set it in .env to enable vision.",
     );
   }
-  if (image.byteLength > IMAGE_BYTES_LIMIT) {
-    throw new Error(
-      `image too large: ${image.byteLength} bytes (limit ${IMAGE_BYTES_LIMIT})`,
-    );
+  for (const img of images) {
+    if (img.buffer.byteLength > IMAGE_BYTES_LIMIT) {
+      throw new Error(
+        `image too large: ${img.buffer.byteLength} bytes (limit ${IMAGE_BYTES_LIMIT})`,
+      );
+    }
   }
+
   // Vision is a one-shot describe call — it doesn't need the per-turn
   // model router. Pin a vision-capable model directly. Don't read
   // BOOP_MODEL: that env can hold the sentinel "auto" (router mode),
@@ -163,6 +190,24 @@ async function describeImage(image: Buffer, mediaType: string): Promise<string> 
   // VISION_MODEL_OVERRIDE is the explicit escape hatch if you ever want
   // to force opus or a future vision-capable model just for descriptions.
   const model = process.env.VISION_MODEL_OVERRIDE ?? "claude-sonnet-4-6";
+  const isAlbum = images.length > 1;
+  // 2KB output per image, capped — albums need more room than single shots
+  // but we don't want unbounded long descriptions.
+  const maxTokens = Math.min(2048 + (images.length - 1) * 1024, 8192);
+
+  const content: Array<unknown> = images.map((img) => ({
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: img.mediaType,
+      data: img.buffer.toString("base64"),
+    },
+  }));
+  content.push({
+    type: "text",
+    text: isAlbum ? VISION_PROMPT_ALBUM : VISION_PROMPT_SINGLE,
+  });
+
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -172,23 +217,8 @@ async function describeImage(image: Buffer, mediaType: string): Promise<string> 
     },
     body: JSON.stringify({
       model,
-      max_tokens: 2048,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: mediaType,
-                data: image.toString("base64"),
-              },
-            },
-            { type: "text", text: VISION_PROMPT },
-          ],
-        },
-      ],
+      max_tokens: maxTokens,
+      messages: [{ role: "user", content }],
     }),
   });
   if (!res.ok) {
@@ -205,6 +235,11 @@ async function describeImage(image: Buffer, mediaType: string): Promise<string> 
     .trim();
   if (!text) throw new Error("vision describe returned no text");
   return text;
+}
+
+// Convenience for the existing single-image callsites — keeps them readable.
+async function describeImage(image: Buffer, mediaType: string): Promise<string> {
+  return describeImages([{ buffer: image, mediaType }]);
 }
 
 // --- text-file content extraction ---------------------------------------
@@ -224,6 +259,88 @@ function isReadableText(mimeType: string | undefined, fileName: string | undefin
     );
   }
   return false;
+}
+
+// --- album coalescing for Telegram media groups -------------------------
+// Telegram sends each photo in an album as an independent update with a
+// shared `media_group_id`. Naively each one fires the photo handler →
+// independent vision call → independent dispatcher turn → N replies for
+// N photos. Awful UX, N× cost.
+//
+// We buffer per `media_group_id`, reset a 1.5s timer on each arrival,
+// and flush as a single multi-image describe + single dispatcher turn.
+// Hard-flush at 10 (Telegram's max album size) so we don't wait the
+// full debounce when the album is clearly complete.
+//
+// In-memory only — if the bot restarts mid-album we lose the buffer.
+// Acceptable: the user retries by re-sending. Not worth a Convex
+// round-trip for a 1.5s window.
+const ALBUM_DEBOUNCE_MS = 1500;
+const ALBUM_HARD_FLUSH_AT = 10;
+const MAX_TRACKED_GROUPS = 50; // safety cap against memory leaks if a
+// flush ever silently fails to delete the buffer entry.
+
+interface AlbumBufferEntry {
+  // Highest-res file_id from each photo in arrival order.
+  fileIds: string[];
+  // First non-empty caption seen (Telegram puts caption on one of the
+  // album items, usually the first).
+  caption: string;
+  // First update_id seen — used as the dedup key for the eventual
+  // dispatcher turn, since the whole album is one logical event.
+  firstUpdateId: string;
+  chatId: string;
+  flushTimer: NodeJS.Timeout;
+}
+
+const albumBuffers = new Map<string, AlbumBufferEntry>();
+
+async function flushAlbum(groupId: string): Promise<void> {
+  const entry = albumBuffers.get(groupId);
+  if (!entry) return;
+  albumBuffers.delete(groupId);
+  clearTimeout(entry.flushTimer);
+
+  const { chatId, fileIds, caption, firstUpdateId } = entry;
+  console.log(
+    `[telegram] album flush chatId=${chatId} group=${groupId} count=${fileIds.length}` +
+      (caption ? ` caption=${JSON.stringify(caption.slice(0, 80))}` : ""),
+  );
+
+  const stopTyping = startTypingLoop(chatId);
+  let description: string;
+  try {
+    const buffers = await Promise.all(fileIds.map(downloadTelegramFile));
+    description = await describeImages(
+      buffers.map((b) => ({ buffer: b, mediaType: "image/jpeg" })),
+    );
+    console.log(`[telegram] album described (${description.length} chars)`);
+  } catch (err) {
+    console.error("[telegram] album description failed:", err);
+    stopTyping();
+    const userMessage =
+      err instanceof ImageConfigError
+        ? "Image understanding isn't set up — `ANTHROPIC_API_KEY` is missing in the server's .env. Send the album as text descriptions, or ping the operator."
+        : `Sorry — I couldn't process that ${fileIds.length}-photo album. Try again or describe it in text?`;
+    await sendTelegramMessage(chatId, userMessage);
+    return;
+  } finally {
+    stopTyping();
+  }
+
+  const content = caption
+    ? `[Album of ${fileIds.length} images]:\n${description}\n\nUser caption: ${caption}`
+    : `[Album of ${fileIds.length} images]:\n${description}`;
+
+  await handleIncoming({
+    chatId,
+    content,
+    updateId: firstUpdateId,
+    // Allowlist already checked when we added to the buffer; re-parse
+    // here so handleIncoming's own gate sees the same set rather than
+    // assuming. parseAllowlist is just env-read — cheap.
+    allowlist: parseAllowlist(),
+  });
 }
 
 function readTextWithTruncation(buffer: Buffer): string {
@@ -383,6 +500,57 @@ export async function startTelegramBot(): Promise<void> {
     const largest = sizes[sizes.length - 1];
     const fileId = largest.file_id;
     const caption = ctx.message.caption?.trim() ?? "";
+    const groupId = ctx.message.media_group_id;
+
+    // Album member → buffer and (re)schedule flush.
+    if (groupId) {
+      console.log(
+        `[telegram] photo chatId=${chatId} group=${groupId} file_id=${fileId} ${largest.width}x${largest.height}` +
+          (caption ? ` caption=${JSON.stringify(caption.slice(0, 80))}` : ""),
+      );
+
+      let entry = albumBuffers.get(groupId);
+      if (!entry) {
+        // Safety: don't let a stuck flush balloon memory.
+        if (albumBuffers.size >= MAX_TRACKED_GROUPS) {
+          console.warn(
+            `[telegram] album buffer at cap (${MAX_TRACKED_GROUPS}); falling back to single-photo handling for group ${groupId}`,
+          );
+        } else {
+          entry = {
+            chatId,
+            fileIds: [],
+            caption: "",
+            firstUpdateId: updateId,
+            // Placeholder; set immediately below.
+            flushTimer: setTimeout(() => {}, 0),
+          };
+          clearTimeout(entry.flushTimer);
+          albumBuffers.set(groupId, entry);
+        }
+      }
+      if (entry) {
+        entry.fileIds.push(fileId);
+        // First non-empty caption wins (Telegram puts caption on
+        // exactly one item, usually the first).
+        if (!entry.caption && caption) entry.caption = caption;
+        clearTimeout(entry.flushTimer);
+        if (entry.fileIds.length >= ALBUM_HARD_FLUSH_AT) {
+          // Telegram's max — we know there's nothing more coming.
+          await flushAlbum(groupId);
+        } else {
+          entry.flushTimer = setTimeout(
+            () => void flushAlbum(groupId),
+            ALBUM_DEBOUNCE_MS,
+          );
+        }
+        return;
+      }
+      // Fallthrough on cap-overflow: handle as single below. Rare path,
+      // logged above for visibility.
+    }
+
+    // Single-photo path (no media_group_id, or buffer-cap fallback).
     console.log(
       `[telegram] photo chatId=${chatId} file_id=${fileId} ${largest.width}x${largest.height}` +
         (caption ? ` caption=${JSON.stringify(caption.slice(0, 80))}` : ""),
