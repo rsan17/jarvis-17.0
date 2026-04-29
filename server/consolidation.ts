@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { broadcast } from "./broadcast.js";
+import { checkDailyCap } from "./cost-guard.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
 
 function randomId(prefix: string): string {
@@ -98,7 +99,13 @@ interface Challenge {
 }
 
 const ADVERSARY_MODEL = process.env.BOOP_ADVERSARY_MODEL ?? "claude-haiku-4-5";
-const DEFAULT_MODEL = process.env.BOOP_MODEL ?? "claude-sonnet-4-6";
+// BOOP_MODEL can be the router sentinel "auto" — that's only meaningful
+// for dispatcher / execution-agent which call selectModel(). Consolidation
+// is a single-shot reasoning task with no tool use; pin a concrete model
+// here so the SDK doesn't try to resolve a non-existent "auto" model id.
+const _envModel = process.env.BOOP_MODEL;
+const DEFAULT_MODEL =
+  !_envModel || _envModel === "auto" ? "claude-sonnet-4-6" : _envModel;
 
 interface Decision {
   proposalIndex: number;
@@ -125,6 +132,10 @@ async function runLlm(
     options: {
       systemPrompt,
       model,
+      // Each consolidation phase is a single-shot reason+answer task
+      // with no tool use. 4 leaves headroom for an SDK retry without
+      // tolerating an infinite loop.
+      maxTurns: 4,
       permissionMode: "bypassPermissions",
     },
   })) {
@@ -176,6 +187,18 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
   pruned: number;
 }> {
   const runId = randomId("cons");
+
+  // Cost guard — consolidation is 3 model calls per run, so a cap-tripping
+  // run wastes ~3× a normal turn. Skip entirely when the cap is hit; the
+  // user's memory will be a touch staler until next window, which is a
+  // far better failure mode than spiking the spend the user already wanted
+  // to throttle.
+  const cap = await checkDailyCap();
+  if (!cap.ok) {
+    console.warn(`[consolidation] skipped (${trigger}): ${cap.reason}`);
+    return { runId, proposals: 0, merged: 0, pruned: 0 };
+  }
+
   await convex.mutation(api.consolidation.createRun, { runId, trigger });
   broadcast("consolidation_started", { runId, trigger });
 

@@ -12,6 +12,7 @@ import { broadcast } from "./broadcast.js";
 import { sendImessage } from "./sendblue.js";
 import { sendTelegramMessage } from "./telegram.js";
 import { selectModel } from "./model-router.js";
+import { checkDailyCap, capExceededMessage } from "./cost-guard.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
 
 const INTERACTION_SYSTEM = `You are Jarvis, a personal agent the user texts from Telegram.
@@ -119,6 +120,27 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
     turnId,
   });
   broadcast("user_message", { conversationId: opts.conversationId, content: opts.content });
+
+  // Daily cost circuit breaker — runs before any model invocation.
+  // We've already persisted the user's message; if the cap is tripped
+  // we log the refusal as the assistant turn so the conversation stays
+  // coherent in Convex and the user sees a clear reason in chat.
+  const cap = await checkDailyCap();
+  if (!cap.ok) {
+    const refusal = capExceededMessage(cap);
+    console.warn(`[turn ${turnId.slice(-6)}] ${cap.reason} — refusing model call`);
+    await convex.mutation(api.messages.send, {
+      conversationId: opts.conversationId,
+      role: "assistant",
+      content: refusal,
+      turnId,
+    });
+    broadcast("assistant_message", {
+      conversationId: opts.conversationId,
+      content: refusal,
+    });
+    return refusal;
+  }
 
   const memoryServer = createMemoryMcp(opts.conversationId);
   const automationServer = createAutomationMcp(opts.conversationId);
@@ -240,6 +262,11 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
       options: {
         systemPrompt,
         model: requestedModel,
+        // Hard cap on assistant turns so a runaway tool loop can't
+        // silently rack up cost. Dispatcher is supposed to: maybe
+        // recall, maybe one find_skills + run_skill (or one spawn),
+        // then reply. 8 leaves headroom for a few retries.
+        maxTurns: 8,
         mcpServers: {
           "boop-memory": memoryServer,
           "boop-spawn": spawnServer,

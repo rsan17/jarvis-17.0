@@ -5,6 +5,7 @@ import { broadcast } from "./broadcast.js";
 import { buildMcpServersForIntegrations, listIntegrations } from "./integrations/registry.js";
 import { createDraftStagingMcp } from "./draft-tools.js";
 import { selectModel } from "./model-router.js";
+import { checkDailyCap, capExceededMessage } from "./cost-guard.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
 
 const running = new Map<string, AbortController>();
@@ -68,6 +69,32 @@ export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResu
 
   const shortId = agentId.slice(-6);
   const logAgent = (msg: string) => console.log(`[agent ${shortId}] ${msg}`);
+
+  // Cost guard runs before any persistence — automation-triggered spawns
+  // bypass the dispatcher's check, so this is the only place that
+  // catches a runaway cron. We register the agent as failed (with the
+  // cap message as the result) so it shows up in the dashboard with a
+  // clear reason, rather than silently disappearing.
+  const cap = await checkDailyCap();
+  if (!cap.ok) {
+    const msg = capExceededMessage(cap);
+    logAgent(`refused: ${cap.reason}`);
+    running.delete(agentId);
+    await convex.mutation(api.agents.create, {
+      agentId,
+      conversationId: opts.conversationId,
+      name,
+      task: opts.task,
+      mcpServers: opts.integrations,
+    });
+    await convex.mutation(api.agents.update, {
+      agentId,
+      status: "failed",
+      error: cap.reason,
+    });
+    return { agentId, result: msg, status: "failed" };
+  }
+
   const taskPreview =
     opts.task.length > 120 ? opts.task.slice(0, 120) + "…" : opts.task;
   logAgent(
@@ -134,6 +161,11 @@ export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResu
       options: {
         systemPrompt: EXECUTION_SYSTEM,
         model: requestedModel,
+        // Hard ceiling on assistant turns. Sub-agents do real work
+        // (web search → fetch → tool → synthesize) so we leave more
+        // headroom than the dispatcher's 8, but a runaway loop still
+        // dies after 12 instead of bleeding cost forever.
+        maxTurns: 12,
         mcpServers,
         allowedTools,
         // Load .claude/skills/ so the model can invoke SKILL.md playbooks. Without
