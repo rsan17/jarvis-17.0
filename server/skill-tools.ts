@@ -4,6 +4,7 @@ import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 import { embed } from "./embeddings.js";
 import { availableIntegrations, spawnExecutionAgent } from "./execution-agent.js";
+import { addTurnCost } from "./turn-cost.js";
 
 function randomId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -30,7 +31,15 @@ async function substringSearch(
   return scored.filter((s) => s.score > 0).slice(0, k);
 }
 
-export function createSkillMcp(conversationId: string | undefined) {
+export function createSkillMcp(
+  conversationId: string | undefined,
+  // Threading the dispatcher's turnId here lets `run_skill` add the
+  // sub-agent's cost to the per-turn accumulator so the dispatcher's
+  // cost-disclosure footer reflects skill spend, not just freeform
+  // spawn_agent spend. Optional so callers without a turn (debug
+  // dashboard, future automation paths) keep working.
+  turnId?: string,
+) {
   return createSdkMcpServer({
     name: "boop-skills",
     version: "0.1.0",
@@ -145,6 +154,9 @@ export function createSkillMcp(conversationId: string | undefined) {
               conversationId,
               name: `skill:${args.name}`,
             });
+            // Bubble the skill's sub-agent cost up to the dispatcher's
+            // turn-level total so the disclosure footer covers it.
+            if (turnId) addTurnCost(turnId, res.costUsd);
             result = res.result;
             if (res.status !== "completed") {
               status = "failed";

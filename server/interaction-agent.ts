@@ -13,6 +13,7 @@ import { sendImessage } from "./sendblue.js";
 import { sendTelegramMessage } from "./telegram.js";
 import { selectModel } from "./model-router.js";
 import { checkDailyCap, capExceededMessage } from "./cost-guard.js";
+import { addTurnCost, takeTurnCost, maybeDisclosureFooter } from "./turn-cost.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
 
 const INTERACTION_SYSTEM = `You are Jarvis, a personal agent the user texts from Telegram.
@@ -146,7 +147,7 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
   const memoryServer = createMemoryMcp(opts.conversationId);
   const automationServer = createAutomationMcp(opts.conversationId);
   const draftDecisionServer = createDraftDecisionMcp(opts.conversationId);
-  const skillServer = createSkillMcp(opts.conversationId);
+  const skillServer = createSkillMcp(opts.conversationId, turnId);
 
   const ackServer = createSdkMcpServer({
     name: "boop-ack",
@@ -214,6 +215,9 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
             conversationId: opts.conversationId,
             name: args.name,
           });
+          // Roll the sub-agent's spend into the turn-level total so the
+          // dispatcher can show a cost-disclosure footer at the end.
+          addTurnCost(turnId, res.costUsd);
           return {
             content: [
               {
@@ -349,6 +353,24 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
       costUsd: usage.costUsd,
       durationMs: Date.now() - turnStart,
     });
+  }
+
+  // Cost disclosure footer — appended to the reply when the turn's
+  // total spend (dispatcher + spawned sub-agents + run_skill) crosses
+  // COST_DISCLOSURE_THRESHOLD_USD (default $0.50). Lets the user notice
+  // when a single ask routes through opus and burns $5 in one shot.
+  // Skipped silently below the threshold so chitchat doesn't get a
+  // "($0.001)" footer.
+  // Memory extraction cost is intentionally NOT included — it's a
+  // background fire-and-forget that hasn't run yet at this point.
+  const spawnedCost = takeTurnCost(turnId);
+  const totalTurnCost = (usage.costUsd ?? 0) + spawnedCost;
+  const footer = maybeDisclosureFooter(totalTurnCost);
+  if (footer) {
+    log(
+      `disclosure: dispatcher $${usage.costUsd.toFixed(4)} + spawned $${spawnedCost.toFixed(4)} = $${totalTurnCost.toFixed(4)}`,
+    );
+    reply = `${reply}\n\n${footer}`;
   }
 
   broadcast("assistant_message", { conversationId: opts.conversationId, content: reply });

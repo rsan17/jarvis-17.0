@@ -59,6 +59,10 @@ export interface SpawnResult {
   agentId: string;
   result: string;
   status: "completed" | "failed" | "cancelled";
+  // Total Anthropic cost for this spawn, summed across all turns inside
+  // the sub-agent. Used by the dispatcher to roll up turn-level cost
+  // for the cost-disclosure footer.
+  costUsd: number;
 }
 
 export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResult> {
@@ -92,7 +96,7 @@ export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResu
       status: "failed",
       error: cap.reason,
     });
-    return { agentId, result: msg, status: "failed" };
+    return { agentId, result: msg, status: "failed", costUsd: 0 };
   }
 
   const taskPreview =
@@ -262,7 +266,12 @@ export async function spawnExecutionAgent(opts: SpawnOptions): Promise<SpawnResu
   }
   broadcast("agent_done", { agentId, status, result: buffer.slice(0, 200) });
 
-  return { agentId, result: buffer || errorMsg || "(no output)", status };
+  return {
+    agentId,
+    result: buffer || errorMsg || "(no output)",
+    status,
+    costUsd: usage.costUsd,
+  };
 }
 
 export function cancelAgent(agentId: string): boolean {
