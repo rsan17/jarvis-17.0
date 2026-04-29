@@ -354,6 +354,74 @@ function readTextWithTruncation(buffer: Buffer): string {
   return `${head}\n\n[…truncated ${buffer.byteLength - TEXT_BYTES_LIMIT} bytes…]\n\n${tail}`;
 }
 
+// --- text-message coalescing per chat ----------------------------------
+// Same pattern as album coalescing, but keyed by chatId and triggered
+// by closely-spaced text messages from the same chat. When the user
+// fires off "ось ідея" + "у Linear" + "термін завтра" as three separate
+// messages within a couple seconds, we want the dispatcher to see ONE
+// merged turn with all three lines, not three independent turns each
+// running its own model call and emitting its own reply.
+//
+// Tradeoff: a single text message also gets a small delay before it
+// reaches the dispatcher (the debounce window). Acceptable because the
+// typing indicator fires immediately, and processing dwarfs 1.5s.
+const TEXT_DEBOUNCE_MS = Number(process.env.TEXT_DEBOUNCE_MS ?? 1500);
+const TEXT_HARD_FLUSH_AT = 5; // never buffer more than 5 messages — past
+// that we're better off processing what we have than waiting longer.
+const TEXT_MAX_WAIT_MS = 5000; // absolute ceiling on how long we'll
+// hold a buffer regardless of new arrivals.
+
+interface TextBufferEntry {
+  chatId: string;
+  // Each entry is one user message in arrival order.
+  texts: string[];
+  // First update_id seen — dedup key for the merged dispatcher turn.
+  firstUpdateId: string;
+  // When the buffer was first opened (for TEXT_MAX_WAIT_MS ceiling).
+  openedAt: number;
+  flushTimer: NodeJS.Timeout;
+}
+
+const textBuffers = new Map<string, TextBufferEntry>();
+
+// Disable coalescing entirely with TEXT_DEBOUNCE_MS=0. Useful for
+// debugging "did the bot see my message?" — every message hits the
+// dispatcher immediately when this is set.
+function textCoalescingEnabled(): boolean {
+  return TEXT_DEBOUNCE_MS > 0;
+}
+
+async function flushTextBuffer(chatId: string): Promise<void> {
+  const entry = textBuffers.get(chatId);
+  if (!entry) return;
+  textBuffers.delete(chatId);
+  clearTimeout(entry.flushTimer);
+
+  const { texts, firstUpdateId } = entry;
+  if (texts.length === 0) return;
+
+  // Single message → pass through unchanged. Multiple → join with blank
+  // lines so the dispatcher sees them as paragraphs of one message.
+  // No "[Coalesced N messages]:" prefix — the dispatcher doesn't need to
+  // know they arrived as separate Telegram updates; it just needs the
+  // combined intent.
+  const content =
+    texts.length === 1 ? texts[0] : texts.join("\n\n");
+
+  if (texts.length > 1) {
+    console.log(
+      `[telegram] coalesced ${texts.length} text messages for chat ${chatId}`,
+    );
+  }
+
+  await handleIncoming({
+    chatId,
+    content,
+    updateId: firstUpdateId,
+    allowlist: parseAllowlist(),
+  });
+}
+
 // Both text and voice updates funnel through this. Centralizing the
 // allowlist/dedup/typing/agent path keeps the two grammy handlers thin and
 // avoids drift between transports.
@@ -388,6 +456,22 @@ async function handleIncoming(opts: {
   broadcast("message_in", { conversationId, content, from_number: chatId, handle: updateId });
 
   const stopTyping = startTypingLoop(chatId);
+
+  // Slow-turn warning. The typing indicator pulses every ~5s, but a long
+  // research turn (skill with multiple web searches, opus reasoning, etc.)
+  // can take 30-90s — long enough that the user wonders if the bot died.
+  // Send one explicit "still working" message at ~60s. Single shot; we
+  // don't want a chatty bot, just one signal that things are alive.
+  const slowTurnTimer = setTimeout(() => {
+    sendTelegramMessage(
+      chatId,
+      "⏳ Still working on this — give it another minute.",
+    ).catch((err) =>
+      console.warn(`[turn ${turnTag}] slow-turn notice failed:`, err),
+    );
+    console.log(`[turn ${turnTag}] slow-turn notice sent at 60s`);
+  }, 60_000);
+
   try {
     const reply = await handleUserMessage({
       conversationId,
@@ -413,6 +497,7 @@ async function handleIncoming(opts: {
   } catch (err) {
     console.error(`[turn ${turnTag}] handler error`, err);
   } finally {
+    clearTimeout(slowTurnTimer);
     stopTyping();
   }
 }
@@ -437,12 +522,54 @@ export async function startTelegramBot(): Promise<void> {
   }
 
   bot.on("message:text", async (ctx) => {
-    await handleIncoming({
-      chatId: String(ctx.chat.id),
-      content: ctx.message.text,
-      updateId: String(ctx.update.update_id),
-      allowlist,
-    });
+    const chatId = String(ctx.chat.id);
+    const updateId = String(ctx.update.update_id);
+    const text = ctx.message.text;
+
+    // Allowlist gate before any buffering — strangers can't fill memory.
+    if (allowlist && !allowlist.has(chatId)) {
+      console.log(`[telegram] ignored text from non-allowlisted chat ${chatId}`);
+      return;
+    }
+
+    // Coalescing disabled (TEXT_DEBOUNCE_MS=0) → pass straight through.
+    if (!textCoalescingEnabled()) {
+      await handleIncoming({ chatId, content: text, updateId, allowlist });
+      return;
+    }
+
+    // Append to per-chat buffer. New arrivals reset the timer so a burst
+    // ("ось ідея" → "у Linear" → "термін завтра") flushes once.
+    let entry = textBuffers.get(chatId);
+    if (!entry) {
+      entry = {
+        chatId,
+        texts: [],
+        firstUpdateId: updateId,
+        openedAt: Date.now(),
+        flushTimer: setTimeout(() => {}, 0),
+      };
+      clearTimeout(entry.flushTimer);
+      textBuffers.set(chatId, entry);
+    }
+    entry.texts.push(text);
+    clearTimeout(entry.flushTimer);
+
+    // Hard flush at the message-count cap or after the absolute max wait,
+    // whichever comes first. Otherwise schedule a debounce flush.
+    const elapsed = Date.now() - entry.openedAt;
+    if (
+      entry.texts.length >= TEXT_HARD_FLUSH_AT ||
+      elapsed >= TEXT_MAX_WAIT_MS
+    ) {
+      await flushTextBuffer(chatId);
+    } else {
+      const remainingMaxWait = TEXT_MAX_WAIT_MS - elapsed;
+      entry.flushTimer = setTimeout(
+        () => void flushTextBuffer(chatId),
+        Math.min(TEXT_DEBOUNCE_MS, remainingMaxWait),
+      );
+    }
   });
 
   bot.on("message:voice", async (ctx) => {
