@@ -36,6 +36,8 @@ These are invariants that have been violated in past PRs and silently regressed 
 
 11. **Model selection goes through `server/model-router.ts`, not raw `process.env.BOOP_MODEL`.** Set `BOOP_MODEL=auto` (or unset it) to enable per-turn routing — haiku for chit-chat, sonnet for normal turns, opus for hard / long-shape skill turns. Setting `BOOP_MODEL` to a model id pins every turn to that model (legacy, predictable cost). Inline overrides in user messages (`use opus`, `використай haiku`) and persistent memory preferences (`always use opus for code reviews`) override the heuristic when present. The interaction-agent and execution-agent both call `selectModel()` and log `[turn X] model: tier (reason)` so router decisions are visible without instrumentation.
 
+12. **Bot does NOT edit code through the GitHub integration.** The operator has direct Claude Code subscription access on their machine; coding there is effectively flat-rate while every code edit through the bot is paid API time on opus/sonnet. The dispatcher prompt instructs Jarvis to handle code requests by either (a) creating a GitHub issue spec'ing the change, (b) writing it to memory for the next coding session, or (c) asking the user which they prefer. Read-only GitHub usage (PR status, comments, branches) and issue/comment creation are fine — only file edits / commits / code-changing PRs are off-limits. If you ever loosen this in the dispatcher prompt, also raise the `DAILY_COST_USD_CAP` and warn the operator: a single morning of github-edit-style spawns burned $39 in 4 turns when this guardrail wasn't in place.
+
 ## When running `/upgrade-boop` (upstream merges)
 
 Resolve conflicts in favor of **Telegram-first behavior**:
