@@ -50,3 +50,19 @@ export const listRuns = query({
     return await ctx.db.query("consolidationRuns").order("desc").take(args.limit ?? 25);
   },
 });
+
+// Returns the startedAt timestamp of the most recent consolidation run,
+// or null if no run has ever been recorded. Used by runConsolidation as
+// a rate-limit gate so we don't fire 3 model calls per phase if a manual
+// `/consolidate` endpoint or pm2 restart-loop ever triggers in rapid
+// succession.
+export const lastStartedAt = query({
+  args: {},
+  handler: async (ctx) => {
+    const latest = await ctx.db
+      .query("consolidationRuns")
+      .order("desc")
+      .first();
+    return latest?.startedAt ?? null;
+  },
+});

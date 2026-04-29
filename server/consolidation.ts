@@ -180,6 +180,15 @@ function parseJson<T>(raw: string): T | null {
   }
 }
 
+// Minimum time between consolidation runs (any trigger). Default 1 hour.
+// Prevents rapid-fire reruns from a `pm2` restart-loop, an automation
+// that mistakenly hits POST /consolidate, or a future caller that loops.
+// Each run is 3 model calls, so even an hourly floor caps the worst-case
+// at 24 × 3 = 72 model calls/day from this path alone.
+const CONSOLIDATION_MIN_INTERVAL_MS = Number(
+  process.env.CONSOLIDATION_MIN_INTERVAL_MS ?? 60 * 60 * 1000,
+);
+
 export async function runConsolidation(trigger = "scheduled"): Promise<{
   runId: string;
   proposals: number;
@@ -187,6 +196,34 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
   pruned: number;
 }> {
   const runId = randomId("cons");
+
+  // Rate-limit gate — consolidation is 3 model calls per run, so we
+  // refuse to start one if the previous run started within
+  // CONSOLIDATION_MIN_INTERVAL_MS. Cheap query, fail-open if Convex is
+  // unreachable (refusing every consolidation because Convex hiccupped
+  // is worse than running one we shouldn't have).
+  try {
+    const lastStartedAt = await convex.query(
+      api.consolidation.lastStartedAt,
+      {},
+    );
+    if (
+      lastStartedAt &&
+      Date.now() - lastStartedAt < CONSOLIDATION_MIN_INTERVAL_MS
+    ) {
+      const ageMs = Date.now() - lastStartedAt;
+      console.warn(
+        `[consolidation] skipped (${trigger}): last run ${Math.round(ageMs / 1000)}s ago, ` +
+          `min interval is ${Math.round(CONSOLIDATION_MIN_INTERVAL_MS / 1000)}s`,
+      );
+      return { runId, proposals: 0, merged: 0, pruned: 0 };
+    }
+  } catch (err) {
+    console.warn(
+      "[consolidation] failed to read last-run timestamp, allowing run:",
+      err,
+    );
+  }
 
   // Cost guard — consolidation is 3 model calls per run, so a cap-tripping
   // run wastes ~3× a normal turn. Skip entirely when the cap is hit; the
