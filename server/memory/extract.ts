@@ -44,7 +44,13 @@ export async function extractAndStore(opts: {
   turnId: string;
 }): Promise<void> {
   const started = Date.now();
-  const requestedModel = process.env.BOOP_MODEL ?? "claude-sonnet-4-6";
+  // Memory extraction is a one-shot background call untied to any user turn,
+  // so it doesn't go through the per-turn model router. Don't read
+  // BOOP_MODEL: that env can hold the sentinel "auto" (router mode), which
+  // is not a real Anthropic model id and yields a 404. MEMORY_MODEL_OVERRIDE
+  // is the explicit escape hatch if you ever want to pin a different model
+  // for extraction.
+  const requestedModel = process.env.MEMORY_MODEL_OVERRIDE ?? "claude-sonnet-4-6";
   try {
     const payload = `USER: ${opts.userMessage}\n\nASSISTANT: ${opts.assistantReply}`;
     let buffer = "";

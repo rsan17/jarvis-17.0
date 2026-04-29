@@ -98,7 +98,13 @@ interface Challenge {
 }
 
 const ADVERSARY_MODEL = process.env.BOOP_ADVERSARY_MODEL ?? "claude-haiku-4-5";
-const DEFAULT_MODEL = process.env.BOOP_MODEL ?? "claude-sonnet-4-6";
+// Memory consolidation runs as a background task untied to any user turn,
+// so it doesn't go through the per-turn model router. Don't read
+// BOOP_MODEL: that env can hold the sentinel "auto" (router mode), which
+// is not a real Anthropic model id and yields a 404. CONSOLIDATION_MODEL_OVERRIDE
+// is the explicit escape hatch if you ever want to pin opus / a future model
+// for the proposer/judge passes.
+const DEFAULT_MODEL = process.env.CONSOLIDATION_MODEL_OVERRIDE ?? "claude-sonnet-4-6";
 
 interface Decision {
   proposalIndex: number;
