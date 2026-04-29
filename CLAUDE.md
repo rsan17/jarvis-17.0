@@ -79,7 +79,7 @@ After resolving, run `npm run typecheck` and `npm start` (NOT `npm run dev` in h
 
 ## Production deployment
 
-DigitalOcean Droplet at `142.93.132.222`, user `jarvis`. Code at `/home/jarvis/jarvis/`, run via `pm2` as `jarvis` (`npm start`). Convex deployment `dev:original-jellyfish-81`. Required env vars in `.env`: `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `OPENAI_API_KEY`, `CONVEX_DEPLOYMENT`, `VITE_CONVEX_URL`.
+Runs on a DigitalOcean Droplet behind a non-root user, code under that user's home, supervised by `pm2` (`npm start`). The exact host, user, path, and Convex deployment id are kept out of this file — they live in the operator's local notes / `.env`. Required env vars in `.env`: `ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS`, `OPENAI_API_KEY`, `CONVEX_DEPLOYMENT`, `VITE_CONVEX_URL`.
 
 After merging code changes: SSH in, `git pull`, `pm2 restart jarvis --update-env`. Do **not** run `pm2 start npm -- run dev` — see Hard Rule #7.
 
