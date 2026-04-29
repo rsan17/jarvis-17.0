@@ -17,7 +17,7 @@
 import { api } from "../convex/_generated/api.js";
 import { convex } from "./convex-client.js";
 
-const DEFAULT_CAP_USD = 5;
+const DEFAULT_CAP_USD = 50;
 
 export interface CostGuardCheck {
   ok: boolean;
