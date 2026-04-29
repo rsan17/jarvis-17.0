@@ -29,6 +29,32 @@ export function validateSchedule(schedule: string): { valid: boolean; error?: st
   }
 }
 
+// Estimate how many times a cron schedule will fire in the next 24h.
+// Used by `create_automation` to flag suspiciously frequent schedules
+// before they run away with the spend.
+//
+// Walks `nextRun(after)` forward until the cutoff. Capped at 1500 to
+// avoid spinning forever on a misparsed expression — 1440 is the max
+// possible (every minute), so 1500 is a safe ceiling.
+export function runsInNext24h(schedule: string): number | null {
+  try {
+    const c = new Cron(schedule, { paused: true });
+    const cutoff = Date.now() + 24 * 60 * 60 * 1000;
+    let cursor = new Date();
+    let count = 0;
+    while (count < 1500) {
+      const next = c.nextRun(cursor);
+      if (!next) break;
+      if (next.getTime() >= cutoff) break;
+      count += 1;
+      cursor = next;
+    }
+    return count;
+  } catch {
+    return null;
+  }
+}
+
 async function runAutomation(a: {
   automationId: string;
   name: string;
