@@ -92,6 +92,25 @@ After merging code changes: SSH in, `git pull`, `pm2 restart jarvis --update-env
 
 If you're asked to work on either, treat them as additive — they should not regress any of the Hard Rules above.
 
+## Cost guards — state of the world
+
+The bot has layered cost defenses. From most-to-least preventive:
+
+1. **External hard caps** (Anthropic Console + OpenAI dashboard) — the canonical safety net for runaway-key scenarios. Configure these in the operator's account UI; they're not in code:
+   - **Anthropic Console** → Workspace settings → Spend Limits → recommended `$200/month` soft + `$300/month` hard.
+   - **OpenAI** → `platform.openai.com/settings/organization/limits` → recommended `$50/month` hard (only Whisper transcription runs through OpenAI today).
+   - Update the numbers as actual spend grows; review monthly.
+2. **Daily cost cap** (`server/cost-guard.ts`) — soft 24h-rolling cap. Default `$50` (`DAILY_COST_USD_CAP` env). Trips both dispatcher and execution-agent paths; refuses new model calls until the rolling window rolls off.
+3. **Pre-execution confirm gate** (`server/cost-estimator.ts`, PR #30) — labels turns cheap / normal / expensive / extra-expensive based on keyword + content scoring; bands listed in `CONFIRM_EXPENSIVE_BANDS` (default `expensive,extra-expensive`) get parked in `pendingTurns` and require a "yes" / "так" reply before running.
+4. **Cron sanity** (`server/automation-tools.ts`, PR #21) — `create_automation` refuses schedules >24 runs/day without `force: true` and surfaces an estimated daily cost.
+5. **Per-phase model pinning** (PRs #19, #29) — vision describe, memory extraction, and consolidation proposer/adversary/judge all default to Haiku 4.5. Override per phase via `VISION_MODEL_OVERRIDE`, `BOOP_EXTRACT_MODEL`, `BOOP_PROPOSER_MODEL`, `BOOP_ADVERSARY_MODEL`, `BOOP_JUDGE_MODEL`.
+6. **Hard `maxTurns`** (PR #19) — dispatcher 8, execution-agent 12, consolidation phases 4, extraction 3. Belt-and-suspenders against runaway tool loops.
+7. **Consolidation rate limit** (`server/consolidation.ts`, PR #23) — minimum 1h between runs (`CONSOLIDATION_MIN_INTERVAL_MS`).
+8. **Post-execution disclosure footer** (`server/turn-cost.ts`, PR #25) — appends `(turn cost ~$X.XX)` to the reply when a turn crosses `COST_DISCLOSURE_THRESHOLD_USD` (default `$0.50`). Surface for noticing surprise expensive turns.
+9. **Chit-chat extract gate** (PR #29) — skips post-turn fact extraction entirely when both user message and reply are <50 chars.
+
+When raising or lowering any of these, document the why in the commit message — these guards collectively held a ~$39/day spike to acceptable levels in the past, and the chain only works if every link is intentional.
+
 <!-- convex-ai-start -->
 This project uses [Convex](https://convex.dev) as its backend.
 
