@@ -254,6 +254,34 @@ export default defineSchema({
       dimensions: 1024,
     }),
 
+  // Pre-execution confirm gate (see server/cost-estimator.ts). When
+  // the dispatcher estimates a turn would land in an "expensive" band,
+  // it parks the original user content here, sends a confirm prompt,
+  // and waits for a "yes" on the next message. TTL is 10 minutes;
+  // anything older is ignored on lookup. Status transitions:
+  //   awaiting → confirmed   (user said "yes" within TTL)
+  //   awaiting → cancelled   (user said anything else, or expired)
+  pendingTurns: defineTable({
+    conversationId: v.string(),
+    content: v.string(),
+    band: v.union(
+      v.literal("cheap"),
+      v.literal("normal"),
+      v.literal("expensive"),
+      v.literal("extra-expensive"),
+    ),
+    estimatorReason: v.optional(v.string()),
+    status: v.union(
+      v.literal("awaiting"),
+      v.literal("confirmed"),
+      v.literal("cancelled"),
+    ),
+    createdAt: v.number(),
+    decidedAt: v.optional(v.number()),
+  })
+    .index("by_conversation_status", ["conversationId", "status"])
+    .index("by_conversation", ["conversationId"]),
+
   // Append-only log of every skill invocation. Used for analytics
   // (which skills earn their keep, which silently fail) and to feed the
   // future model router.
