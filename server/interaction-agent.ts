@@ -15,6 +15,12 @@ import { selectModel } from "./model-router.js";
 import { checkDailyCap, capExceededMessage } from "./cost-guard.js";
 import { addTurnCost, takeTurnCost, maybeDisclosureFooter } from "./turn-cost.js";
 import { aggregateUsageFromResult, EMPTY_USAGE, type UsageTotals } from "./usage.js";
+import {
+  estimateTurnCostBand,
+  bandsRequiringConfirm,
+  bandRangeUsd,
+  isConfirmReply,
+} from "./cost-estimator.js";
 
 const INTERACTION_SYSTEM = `You are Jarvis, a personal agent the user texts from Telegram.
 
@@ -152,6 +158,72 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
     return refusal;
   }
 
+  // Pre-execution confirm gate (#24). The estimator labels turns as
+  // cheap / normal / expensive / extra-expensive based on keywords +
+  // model-router score. Bands listed in CONFIRM_EXPENSIVE_BANDS get
+  // parked in `pendingTurns` and the bot replies asking the user to
+  // confirm before doing the work. The user's next message is matched
+  // against a generous confirm-words list (yes, ok, так, давай, …).
+  //
+  // `effectiveContent` is the user content the dispatcher actually
+  // operates on. Normally that's `opts.content`. After a confirm
+  // ("yes" → resume), it's the ORIGINAL content the user sent before
+  // the gate fired — so the bot does the work the user asked for, not
+  // a turn that's literally just "yes".
+  let effectiveContent = opts.content;
+  let resumingFromConfirm = false;
+  const pending = await convex
+    .query(api.pendingTurns.findActive, { conversationId: opts.conversationId })
+    .catch(() => null);
+  if (pending) {
+    if (isConfirmReply(opts.content)) {
+      await convex.mutation(api.pendingTurns.markConfirmed, { id: pending._id });
+      effectiveContent = pending.content;
+      resumingFromConfirm = true;
+      console.log(
+        `[turn ${turnId.slice(-6)}] resuming pending ${pending.band} turn after confirm`,
+      );
+    } else {
+      // User moved on — drop the pending and treat the current message
+      // as a fresh turn. We'll re-estimate below; if the new message is
+      // also expensive, it gets its own confirm prompt.
+      await convex
+        .mutation(api.pendingTurns.cancelAllAwaiting, {
+          conversationId: opts.conversationId,
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  if (!resumingFromConfirm) {
+    const estimate = estimateTurnCostBand({ content: effectiveContent });
+    const gatedBands = bandsRequiringConfirm();
+    if (gatedBands.has(estimate.band)) {
+      console.log(
+        `[turn ${turnId.slice(-6)}] confirm-gate: ${estimate.band} (${estimate.reason})`,
+      );
+      await convex.mutation(api.pendingTurns.create, {
+        conversationId: opts.conversationId,
+        content: effectiveContent,
+        band: estimate.band,
+        estimatorReason: estimate.reason,
+      });
+      const range = bandRangeUsd(estimate.band);
+      const prompt = `Цей запит виглядає як ${estimate.band} робота (≈${range}). Reply "yes" / "так" щоб продовжити, або щось інше — скасую.`;
+      await convex.mutation(api.messages.send, {
+        conversationId: opts.conversationId,
+        role: "assistant",
+        content: prompt,
+        turnId,
+      });
+      broadcast("assistant_message", {
+        conversationId: opts.conversationId,
+        content: prompt,
+      });
+      return prompt;
+    }
+  }
+
   const memoryServer = createMemoryMcp(opts.conversationId);
   const automationServer = createAutomationMcp(opts.conversationId);
   const draftDecisionServer = createDraftDecisionMcp(opts.conversationId);
@@ -254,15 +326,18 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
   );
 
   const prompt = historyBlock
-    ? `Prior turns:\n${historyBlock}\n\nCurrent message:\n${opts.content}`
-    : opts.content;
+    ? `Prior turns:\n${historyBlock}\n\nCurrent message:\n${effectiveContent}`
+    : effectiveContent;
 
   const tag = opts.turnTag ?? turnId.slice(-6);
   const log = (msg: string) => console.log(`[turn ${tag}] ${msg}`);
+  if (resumingFromConfirm) {
+    log(`resumed from confirm gate (effective content len=${effectiveContent.length})`);
+  }
 
   const turnStart = Date.now();
   const decision = await selectModel({
-    content: opts.content,
+    content: effectiveContent,
     conversationId: opts.conversationId,
   });
   const requestedModel = decision.model;
@@ -384,9 +459,11 @@ export async function handleUserMessage(opts: HandleOpts): Promise<string> {
   broadcast("assistant_message", { conversationId: opts.conversationId, content: reply });
 
   // Background extraction — fire-and-forget; don't block the reply.
+  // Use `effectiveContent` so a resumed-after-confirm turn extracts
+  // facts from the original request, not from the literal "yes".
   extractAndStore({
     conversationId: opts.conversationId,
-    userMessage: opts.content,
+    userMessage: effectiveContent,
     assistantReply: reply,
     turnId,
   }).catch((err) => console.error("[interaction] extraction error", err));
