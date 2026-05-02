@@ -187,9 +187,10 @@ async function describeImages(images: ImagePart[]): Promise<string> {
   // model router. Pin a vision-capable model directly. Don't read
   // BOOP_MODEL: that env can hold the sentinel "auto" (router mode),
   // which is not a real Anthropic model id and yields a 404.
-  // VISION_MODEL_OVERRIDE is the explicit escape hatch if you ever want
-  // to force opus or a future vision-capable model just for descriptions.
-  const model = process.env.VISION_MODEL_OVERRIDE ?? "claude-sonnet-4-6";
+  // Haiku 4.5 is vision-capable and is ~5× cheaper than sonnet for
+  // describe-this-image work. VISION_MODEL_OVERRIDE is the escape hatch
+  // if a particular use case (OCR-heavy, fine detail) needs sonnet/opus.
+  const model = process.env.VISION_MODEL_OVERRIDE ?? "claude-haiku-4-5";
   const isAlbum = images.length > 1;
   // 2KB output per image, capped — albums need more room than single shots
   // but we don't want unbounded long descriptions.

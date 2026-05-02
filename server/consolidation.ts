@@ -99,13 +99,20 @@ interface Challenge {
 }
 
 const ADVERSARY_MODEL = process.env.BOOP_ADVERSARY_MODEL ?? "claude-haiku-4-5";
+const PROPOSER_MODEL = process.env.BOOP_PROPOSER_MODEL ?? "claude-haiku-4-5";
+// Judge issues the final ruling, so default it slightly stronger than
+// proposer / adversary. Override to haiku via env if cost matters more
+// than judge sharpness.
+const JUDGE_MODEL = process.env.BOOP_JUDGE_MODEL ?? "claude-haiku-4-5";
 // BOOP_MODEL can be the router sentinel "auto" — that's only meaningful
 // for dispatcher / execution-agent which call selectModel(). Consolidation
 // is a single-shot reasoning task with no tool use; pin a concrete model
 // here so the SDK doesn't try to resolve a non-existent "auto" model id.
+// DEFAULT_MODEL stays as the runLlm() third-arg default; phase models
+// above pin each phase explicitly.
 const _envModel = process.env.BOOP_MODEL;
 const DEFAULT_MODEL =
-  !_envModel || _envModel === "auto" ? "claude-sonnet-4-6" : _envModel;
+  !_envModel || _envModel === "auto" ? "claude-haiku-4-5" : _envModel;
 
 interface Decision {
   proposalIndex: number;
@@ -288,7 +295,7 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
       .join("\n");
 
     broadcast("consolidation_phase", { runId, phase: "proposing" });
-    const proposerCall = await runLlm(PROPOSER_PROMPT, payload);
+    const proposerCall = await runLlm(PROPOSER_PROMPT, payload, PROPOSER_MODEL);
     await recordConsolidationUsage(
       "consolidation-proposer",
       runId,
@@ -352,7 +359,7 @@ export async function runConsolidation(trigger = "scheduled"): Promise<{
     const judgePayload = `Proposals:\n${proposalsList}\n\nAdversary challenges:\n${challengesBlock}\n\nOriginal memories:\n${payload}`;
 
     broadcast("consolidation_phase", { runId, phase: "judging" });
-    const judgeCall = await runLlm(JUDGE_PROMPT, judgePayload);
+    const judgeCall = await runLlm(JUDGE_PROMPT, judgePayload, JUDGE_MODEL);
     await recordConsolidationUsage(
       "consolidation-judge",
       runId,

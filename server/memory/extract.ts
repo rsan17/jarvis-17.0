@@ -38,6 +38,13 @@ interface ExtractedFact {
   corrects?: string | null;
 }
 
+// Skip extraction when both sides of the turn are short — chit-chat
+// like "ок" / "thanks" / "good morning" has nothing durable to store.
+// Threshold is per-side: extracts trigger if EITHER side has ≥50 chars,
+// so a short user question with a long assistant reply still extracts
+// (could contain a fact the assistant looked up).
+const MIN_EXTRACT_LENGTH_CHARS = 50;
+
 export async function extractAndStore(opts: {
   conversationId: string;
   userMessage: string;
@@ -45,13 +52,26 @@ export async function extractAndStore(opts: {
   turnId: string;
 }): Promise<void> {
   const started = Date.now();
+
+  // Chit-chat gate — saves a haiku call per "ок" / "thanks" / "GM" turn.
+  // Cost guard below would still let it through; this is the cheaper
+  // upstream filter.
+  if (
+    opts.userMessage.length < MIN_EXTRACT_LENGTH_CHARS &&
+    opts.assistantReply.length < MIN_EXTRACT_LENGTH_CHARS
+  ) {
+    return;
+  }
+
   // BOOP_MODEL can be the router sentinel "auto" — that's only meaningful
   // for the dispatcher / execution-agent which call selectModel(). For
-  // background extraction we want a real, fixed model id; default to
-  // sonnet so the SDK doesn't try to resolve a non-existent "auto" model.
+  // background extraction we want a real, fixed model id. Haiku is plenty
+  // for strict-JSON fact extraction; sonnet was overkill here. Override
+  // via BOOP_EXTRACT_MODEL if extraction quality drops.
   const envModel = process.env.BOOP_MODEL;
   const requestedModel =
-    !envModel || envModel === "auto" ? "claude-sonnet-4-6" : envModel;
+    process.env.BOOP_EXTRACT_MODEL ??
+    (!envModel || envModel === "auto" ? "claude-haiku-4-5" : envModel);
 
   // Cost guard — extraction runs after every turn, so a stuck loop is the
   // worst-case multiplier. Bail before invoking the SDK; a missed
